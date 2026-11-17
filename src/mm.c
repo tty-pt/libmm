@@ -11,38 +11,43 @@ static void usage(const char *prog) {
 		"  %s recall [options] [query]\n"
 		"      --scope <all|code|session|persistent>\n"
 		"      --tier <auto|global|project|both>\n"
-		"      --symbol <name>       Read exact symbol definition & callers/callees\n"
-		"      --file <substr>       Filter code search by file path\n"
-		"      --kind <Kind>         Filter code search by symbol kind\n"
-		"      --trace <name>        Trace call graph for symbol\n"
+		"      --symbol <name>         Read exact symbol definition & callers/callees\n"
+		"      --parent-symbol <name>  Disambiguate class method parent\n"
+		"      --file <substr>         Filter code search by file path\n"
+		"      --kind <Kind>           Filter code search by symbol kind\n"
+		"      --trace <name>          Trace call graph for symbol\n"
 		"      --direction <in|out|both>\n"
-		"      --depth <N>           Call-graph or diff depth (default 2)\n"
-		"      --diff                Analyze git diff blast radius\n"
-		"      --overview            Show codebase or lore overview\n"
-		"      --diagnose <text>     Localize fault from error/stack trace\n"
-		"      --zoom-ref <N>        Zoom into persistent memory ref N\n"
-		"      --zoom-turn <N>       Zoom into session turn N\n"
-		"      --session <id>        Filter session ID\n"
-		"      --limit <N>           Max results (default 10)\n"
-		"      --include-l0          Include raw L0 records\n"
-		"      --json                Output JSON\n\n"
+		"      --depth <N>             Call-graph or diff depth (default 2)\n"
+		"      --diff                  Analyze git diff blast radius\n"
+		"      --overview              Show codebase or lore overview\n"
+		"      --diagnose <text>       Localize fault from error/stack trace\n"
+		"      --guardrail <text>      Evaluate counterfactual pre-flight guardrail\n"
+		"      --zoom-ref <N>          Zoom into persistent memory ref N\n"
+		"      --zoom-turn <N>         Zoom into session turn N\n"
+		"      --tool-index <N>        Select specific tool call index inside turn\n"
+		"      --lineage <active|all>  Session lineage branch filter\n"
+		"      --session <id>          Filter session ID\n"
+		"      --limit <N>             Max results (default 10)\n"
+		"      --include-l0            Include raw L0 records\n"
+		"      --json                  Output JSON\n\n"
 		"  %s record [options] <problem/rule summary>\n"
-		"      --standing            Record as global standing operator rule (Tier 1)\n"
-		"      --anchor              Mark as flashbulb salience anchor (1.25x)\n"
+		"      --standing              Record as global standing operator rule (Tier 1)\n"
+		"      --anchor                Mark as flashbulb salience anchor (1.25x)\n"
 		"      --tier <auto|global|project>\n"
 		"      --type <note|episode|decision|rule>\n"
 		"      --status <supported|tested|observed|hypothesized>\n"
 		"      --level <L0|L1|L2|L3>\n"
-		"      --project <name>      Override project tag\n"
-		"      --subsystem <name>    Set subsystem tag\n\n"
-		"  %s review --ref <N> --action <confirm|contradict|supersede|helpful|harmful|obsolete> [--tier <global|project>]\n"
+		"      --project <name>        Override project tag\n"
+		"      --subsystem <name>      Set subsystem tag\n\n"
+		"  %s review --ref <N> --action <inspect|update_lifecycle|confirm|contradict|supersede|helpful|harmful|obsolete> [options]\n"
 		"  %s forget --ref <N> [--tier <global|project>]\n"
 		"  %s prime [prompt]\n"
 		"  %s session ingest --session <id> --turn <N> --role <user|assistant> <text>\n"
+		"  %s session compact [--session <id>]\n"
 		"  %s consolidate [--tier <global|project>] [--batch <N>]\n"
 		"  %s status\n"
 		"  %s mcp\n",
-		prog, prog, prog, prog, prog, prog, prog, prog, prog);
+		prog, prog, prog, prog, prog, prog, prog, prog, prog, prog);
 }
 
 static mm_tier_t parse_tier_arg(const char *s) {
@@ -102,10 +107,11 @@ int main(int argc, char **argv) {
 	} else if (!strcmp(cmd, "recall")) {
 		mm_recall_req_t req;
 		memset(&req, 0, sizeof(req));
-		req.scope = MM_SCOPE_ALL;
-		req.tier  = MM_TIER_BOTH;
-		req.limit = 10;
-		req.depth = 2;
+		req.scope      = MM_SCOPE_ALL;
+		req.tier       = MM_TIER_BOTH;
+		req.limit      = 10;
+		req.depth      = 2;
+		req.tool_index = 0;
 
 		for (int i = 2; i < argc; i++) {
 			const char *a = argv[i];
@@ -120,6 +126,8 @@ int main(int argc, char **argv) {
 			} else if (!strcmp(a, "--symbol") && i + 1 < argc) {
 				req.symbol = argv[++i];
 				req.scope  = MM_SCOPE_CODE;
+			} else if (!strcmp(a, "--parent-symbol") && i + 1 < argc) {
+				req.parent_symbol = argv[++i];
 			} else if (!strcmp(a, "--file") && i + 1 < argc) {
 				req.file = argv[++i];
 			} else if (!strcmp(a, "--kind") && i + 1 < argc) {
@@ -141,17 +149,25 @@ int main(int argc, char **argv) {
 			} else if (!strcmp(a, "--diagnose") && i + 1 < argc) {
 				req.diagnose = argv[++i];
 				req.scope    = MM_SCOPE_CODE;
+			} else if (!strcmp(a, "--guardrail") && i + 1 < argc) {
+				req.guardrail = argv[++i];
 			} else if (!strcmp(a, "--zoom-ref") && i + 1 < argc) {
 				req.zoom_ref = (uint32_t)strtoul(argv[++i], NULL, 10);
 			} else if (!strcmp(a, "--zoom-turn") && i + 1 < argc) {
 				req.zoom_turn = atoi(argv[++i]);
 				req.scope     = MM_SCOPE_SESSION;
+			} else if (!strcmp(a, "--tool-index") && i + 1 < argc) {
+				req.tool_index = atoi(argv[++i]);
+			} else if (!strcmp(a, "--lineage") && i + 1 < argc) {
+				req.lineage = argv[++i];
 			} else if (!strcmp(a, "--session") && i + 1 < argc) {
 				req.session_id = argv[++i];
 			} else if (!strcmp(a, "--limit") && i + 1 < argc) {
 				req.limit = atoi(argv[++i]);
 			} else if (!strcmp(a, "--include-l0")) {
 				req.include_l0 = true;
+			} else if (!strcmp(a, "--include-evidence")) {
+				req.include_evidence = true;
 			} else if (!strcmp(a, "--dedupe")) {
 				req.dedupe = true;
 			} else if (!strcmp(a, "--json")) {
@@ -232,12 +248,34 @@ int main(int argc, char **argv) {
 				req.tier = parse_tier_arg(argv[++i]);
 			} else if (!strcmp(a, "--superseded-by") && i + 1 < argc) {
 				req.superseded_by_ref = (uint32_t)strtoul(argv[++i], NULL, 10);
+			} else if (!strcmp(a, "--target-lifecycle") && i + 1 < argc) {
+				req.target_lifecycle = mm_status_from_str(argv[++i]);
+			} else if (!strcmp(a, "--reason") && i + 1 < argc) {
+				req.reason = argv[++i];
+			} else if (!strcmp(a, "--evidence-ref") && i + 1 < argc) {
+				req.evidence_ref = (uint32_t)strtoul(argv[++i], NULL, 10);
+			} else if (!strcmp(a, "--direction") && i + 1 < argc) {
+				req.direction = argv[++i];
+			} else if (!strcmp(a, "--depth") && i + 1 < argc) {
+				req.depth = atoi(argv[++i]);
 			}
 		}
-		if (mm_review(ctx, &req) == 0) {
-			printf("Reviewed ref %u (%s)\n", req.ref, req.action ? req.action : "");
+		char *out = NULL;
+		if (mm_review_ex(ctx, &req, &out, NULL) == 0) {
+			if (out && out[0]) {
+				fputs(out, stdout);
+				if (out[strlen(out) - 1] != '\n') fputc('\n', stdout);
+			} else {
+				printf("Reviewed ref %u (%s)\n", req.ref, req.action ? req.action : "");
+			}
+			free(out);
 		} else {
-			fprintf(stderr, "mm review: failed\n");
+			if (out) {
+				fprintf(stderr, "%s\n", out);
+				free(out);
+			} else {
+				fprintf(stderr, "mm review: failed\n");
+			}
 			exit_code = 1;
 		}
 	} else if (!strcmp(cmd, "forget")) {
@@ -274,6 +312,22 @@ int main(int argc, char **argv) {
 			} else {
 				printf("Ingested session %s turn %d\n", sid, turn);
 			}
+		} else if (!strcmp(sub, "compact")) {
+			mm_tier_t tier = MM_TIER_AUTO;
+			const char *sid = "default";
+			for (int i = 3; i < argc; i++) {
+				if (!strcmp(argv[i], "--tier") && i + 1 < argc) tier = parse_tier_arg(argv[++i]);
+				else if (!strcmp(argv[i], "--session") && i + 1 < argc) sid = argv[++i];
+			}
+			char *summary = NULL;
+			if (mm_session_compact(ctx, tier, sid, NULL, &summary, NULL) == 0) {
+				if (summary) {
+					printf("%s\n", summary);
+					free(summary);
+				}
+			} else {
+				exit_code = 1;
+			}
 		} else {
 			usage(argv[0]);
 			exit_code = 1;
@@ -286,7 +340,10 @@ int main(int argc, char **argv) {
 			else if (!strcmp(argv[i], "--batch") && i + 1 < argc) batch = atoi(argv[++i]);
 		}
 		int drained = mm_consolidate_drain(ctx, tier, batch);
-		printf("Consolidated %d L0 memory record(s)\n", drained >= 0 ? drained : 0);
+		int l2_created = 0, l3_created = 0;
+		mm_consolidate_scopes_and_principles(ctx, tier, &l2_created, &l3_created);
+		printf("Consolidated %d L0 memory record(s) (L2: %d, L3: %d)\n",
+		       drained >= 0 ? drained : 0, l2_created, l3_created);
 	} else {
 		usage(argv[0]);
 		exit_code = 1;

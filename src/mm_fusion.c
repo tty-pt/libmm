@@ -83,7 +83,10 @@ bool mm_is_technical_inquiry(const char *query) {
 
 bool mm_is_code_or_doc_artifact(const char *record, const mm_envelope_t *env) {
 	if (!env) return false;
-	if (!strcmp(env->type, "episode") || (env->ep_problem && env->ep_problem[0])) {
+	if (!strcmp(env->type, "episode") ||
+	    (env->ep_problem && env->ep_problem[0]) ||
+	    (env->ep_request && env->ep_request[0]) ||
+	    (env->ep_outcome && env->ep_outcome[0])) {
 		return false;
 	}
 	const char *s = (env->summary && env->summary[0]) ? env->summary : (record ? record : "");
@@ -100,23 +103,41 @@ bool mm_is_code_or_doc_artifact(const char *record, const mm_envelope_t *env) {
 
 	if (strstr(s, "isletFspec") || strstr(s, "mem-islet.db")) return true;
 
-	/* Check grep/ripgrep hit line pattern: path/to/file.ext:123: */
-	const char *colon = strchr(s, ':');
-	if (colon && colon > s && (colon - s) < 128 && isdigit((unsigned char)colon[1])) {
-		bool has_dot = false;
-		bool valid_path = true;
-		for (const char *p = s; p < colon; p++) {
-			if (*p == '.') has_dot = true;
-			if (isspace((unsigned char)*p)) { valid_path = false; break; }
+	/* Check :123: const/let/var/function/import/export/#include/#define or path/to/file.ext:123: */
+	for (const char *p = s; *p; p++) {
+		if (*p == ':' && isdigit((unsigned char)p[1])) {
+			const char *q = p + 1;
+			while (isdigit((unsigned char)*q)) q++;
+			if (*q == ':') {
+				const char *after = q + 1;
+				while (*after && isspace((unsigned char)*after)) after++;
+				for (int i = 0; code_prefixes[i]; i++) {
+					if (strncmp(after, code_prefixes[i], strlen(code_prefixes[i])) == 0)
+						return true;
+				}
+				if (p > s && (p - s) < 128) {
+					bool has_dot = false;
+					bool valid_path = true;
+					for (const char *k = s; k < p; k++) {
+						if (*k == '.') has_dot = true;
+						if (isspace((unsigned char)*k)) { valid_path = false; break; }
+					}
+					if (has_dot && valid_path) return true;
+				}
+			}
 		}
-		if (has_dot && valid_path) return true;
 	}
 
 	if (strncmp(s, "# ", 2) == 0) {
-		if (strstr(s, "README") || strstr(s, "readme") ||
-		    strstr(s, "Documentation") || strstr(s, "LICENSE") ||
-		    strstr(s, "pi-mm:")) {
-			return true;
+		static const char *const doc_words[] = {
+			"readme", "documentation", "license", "package", "pi-mm:", NULL
+		};
+		for (int i = 0; doc_words[i]; i++) {
+			const char *w = doc_words[i];
+			size_t wlen = strlen(w);
+			for (const char *p = s + 2; *p; p++) {
+				if (strncasecmp(p, w, wlen) == 0) return true;
+			}
 		}
 	}
 	return false;
@@ -143,6 +164,21 @@ bool mm_is_question_memory(const mm_envelope_t *env) {
 	for (int i = 0; q_prefixes[i]; i++) {
 		if (starts_with_ci(check, q_prefixes[i])) return true;
 	}
+
+	const char *prob = (env->ep_problem && env->ep_problem[0])
+		? env->ep_problem
+		: (env->ep_request ? env->ep_request : "");
+	while (*prob && isspace((unsigned char)*prob)) prob++;
+	size_t plen = strlen(prob);
+	while (plen > 0 && isspace((unsigned char)prob[plen - 1])) plen--;
+	if (plen > 0 && prob[plen - 1] == '?') {
+		static const char *const prob_q[] = {
+			"do you", "what did", "what do", "did i", "can you", NULL
+		};
+		for (int i = 0; prob_q[i]; i++) {
+			if (starts_with_ci(prob, prob_q[i])) return true;
+		}
+	}
 	return false;
 }
 
@@ -152,12 +188,19 @@ bool mm_is_assistant_echo(const mm_envelope_t *env) {
 	while (*s && isspace((unsigned char)*s)) s++;
 	if (strncmp(s, "> *\"", 4) == 0 || strncmp(s, "> \"", 3) == 0) return true;
 
-	static const char *const echo_prefixes[] = {
-		"you mentioned:", "you mentioned -", "you said:", "you said -",
-		"i remember that you:", "as you said:", NULL
+	static const char *const echo_phrases[] = {
+		"you mentioned", "you said", "i remember that you", "as you said", NULL
 	};
-	for (int i = 0; echo_prefixes[i]; i++) {
-		if (starts_with_ci(s, echo_prefixes[i])) return true;
+	for (int i = 0; echo_phrases[i]; i++) {
+		size_t plen = strlen(echo_phrases[i]);
+		if (strncasecmp(s, echo_phrases[i], plen) == 0) {
+			const char *rest = s + plen;
+			while (*rest && (*rest == ' ' || *rest == '\t')) rest++;
+			if (*rest == ':' || *rest == '-' ||
+			    strncmp(rest, "\xe2\x80\x94", 3) == 0) {
+				return true;
+			}
+		}
 	}
 	return false;
 }
@@ -327,7 +370,7 @@ double mm_compute_ranking_score(const mm_candidate_t *cand, const mm_filter_crit
 	}
 
 	/* 6. Flashbulb anchor memory salience boost */
-	if (env->is_anchor || env->standing) {
+	if (env->is_anchor) {
 		score *= 1.25;
 	}
 
@@ -370,20 +413,6 @@ static void normalize_summary(const char *s, char *out, size_t cap) {
 	}
 	while (j > 0 && out[j - 1] == ' ') j--;
 	out[j] = '\0';
-}
-
-static void clone_envelope(mm_envelope_t *dst, const mm_envelope_t *src) {
-	*dst = *src;
-	dst->summary = src->summary ? strdup(src->summary) : NULL;
-	for (size_t i = 0; i < src->n_tags; i++) {
-		dst->tags[i] = src->tags[i] ? strdup(src->tags[i]) : NULL;
-	}
-	for (size_t i = 0; i < src->n_constraints; i++) {
-		dst->constraints[i] = src->constraints[i] ? strdup(src->constraints[i]) : NULL;
-	}
-	dst->ep_problem = src->ep_problem ? strdup(src->ep_problem) : NULL;
-	dst->ep_request = src->ep_request ? strdup(src->ep_request) : NULL;
-	dst->ep_outcome = src->ep_outcome ? strdup(src->ep_outcome) : NULL;
 }
 
 int mm_filter_and_enrich(mm_candidate_t *candidates, size_t n_candidates,
@@ -433,11 +462,11 @@ int mm_filter_and_enrich(mm_candidate_t *candidates, size_t n_candidates,
 
 		/* Project/subsystem filter (Tier 1 standing directives bypass repo filter!) */
 		if (!env->standing && cand->tier != MM_TIER_GLOBAL) {
-			if (crit->project && crit->project[0] && env->ctx_project[0] &&
+			if (crit->project && crit->project[0] &&
 			    strcmp(env->ctx_project, crit->project) != 0) {
 				continue;
 			}
-			if (crit->subsystem && crit->subsystem[0] && env->ctx_subsystem[0] &&
+			if (crit->subsystem && crit->subsystem[0] &&
 			    strcmp(env->ctx_subsystem, crit->subsystem) != 0) {
 				continue;
 			}
@@ -465,7 +494,7 @@ int mm_filter_and_enrich(mm_candidate_t *candidates, size_t n_candidates,
 		dst->semantic_rank = cand->semantic_rank;
 		dst->lexical_score = cand->lexical_score;
 		dst->semantic_score = cand->semantic_score;
-		clone_envelope(&dst->envelope, env);
+		mm_envelope_clone(&dst->envelope, env);
 		dst->has_envelope = true;
 		dst->ranking_score = mm_compute_ranking_score(dst, crit);
 	}
@@ -485,6 +514,27 @@ int mm_filter_and_enrich(mm_candidate_t *candidates, size_t n_candidates,
 				if (norm_i[0] && strcmp(norm_i, norm_j) == 0) {
 					dup = true;
 					break;
+				}
+			}
+			/* Check if this L0 candidate is cited as evidence by a higher-level candidate */
+			if (!dup && filtered[i].envelope.level == MM_LEVEL_L0 && norm_i[0]) {
+				for (size_t k = 0; k < count && !dup; k++) {
+					if (k == i) continue;
+					const mm_envelope_t *pe = &filtered[k].envelope;
+					if (pe->level == MM_LEVEL_L0 || pe->level == MM_LEVEL_NONE) continue;
+					for (size_t e = 0; e < pe->n_evidence; e++) {
+						if (pe->evidence[e] == filtered[i].ref) {
+							char pnorm[512];
+							normalize_summary(pe->summary, pnorm, sizeof(pnorm));
+							if (pnorm[0] &&
+							    (strcmp(pnorm, norm_i) == 0 ||
+							     strstr(pnorm, norm_i) != NULL ||
+							     strstr(norm_i, pnorm) != NULL)) {
+								dup = true;
+								break;
+							}
+						}
+					}
 				}
 			}
 			if (dup) {

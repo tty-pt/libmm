@@ -1,0 +1,59 @@
+{
+  "name": "@tty-pt/mm",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Universal Node.js and Deno N-API bindings for libmm (Pure-C Two-Tier Multi-Axis Memory & Codebase Intelligence Engine)",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "prebuilds",
+    "include",
+    "*.pc",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build:native": "NODE_INC=$(dirname $(dirname $(command -v node)))/include/node; mkdir -p build/Release dist && gcc -O3 -fPIC -shared -I\"$NODE_INC\" -I/usr/include/node -I../include -I../../libcorm/include -I../../libstele/include native/mm_napi.c -L../lib -L../../libcorm/lib -L../../libstele/lib -Wl,-rpath,'$ORIGIN:$ORIGIN/../../lib:$ORIGIN/../../../libcorm/lib:$ORIGIN/../../../libstele/lib:../lib:../../libcorm/lib:../../libstele/lib' -lmm -lcorm -lstele -lm -o build/Release/mm_node.node && cp build/Release/mm_node.node dist/mm_node.node && cp build/Release/mm_node.node dist/mm.node && (test -d prebuilds/linux-x64 && cp build/Release/mm_node.node prebuilds/linux-x64/mm.node || true)",
+    "test": "node --test tests/mm.test.mjs"
+  },
+  "dependencies": {
+    "@tty-pt/stele": "^1.7.1"
+  },
+  "peerDependencies": {
+    "@tty-pt/corm": ">=2.4.0",
+    "@tty-pt/stele": ">=1.7.0"
+  },
+  "devDependencies": {
+    "@tty-pt/corm": "^2.4.2",
+    "@tty-pt/stele": "^1.7.1"
+  },
+  "keywords": [
+    "mm",
+    "libmm",
+    "memory",
+    "mipmaps",
+    "corm",
+    "mcp",
+    "code-index",
+    "napi"
+  ],
+  "author": "Paulo Quirino <quirinpa@gmail.com>",
+  "license": "BSD-2-Clause",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tty-pt/libmm.git",
+    "directory": "npm"
+  },
+  "homepage": "https://github.com/tty-pt/libmm/tree/main/npm#readme",
+  "bugs": {
+    "url": "https://github.com/tty-pt/libmm/issues"
+  }
+}

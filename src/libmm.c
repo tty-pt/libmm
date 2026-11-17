@@ -1,5 +1,6 @@
 #include <ttypt/mm.h>
 #include <ttypt/corm.h>
+#include <ttypt/stele.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -105,7 +106,7 @@ void mm_envelope_init(mm_envelope_t *env) {
 	strncpy(env->type, "note", sizeof(env->type) - 1);
 	time_t now = time(NULL);
 	struct tm tm_utc;
-	gmtime_r(&now, &tm_utc);
+	stl_gmtime_r(&now, &tm_utc);
 	strftime(env->timestamp, sizeof(env->timestamp), "%Y-%m-%dT%H:%M:%SZ", &tm_utc);
 }
 
@@ -129,6 +130,37 @@ void mm_envelope_free(mm_envelope_t *env) {
 	env->ep_request = NULL;
 	free(env->ep_outcome);
 	env->ep_outcome = NULL;
+	for (size_t i = 0; i < env->n_findings; i++) {
+		free(env->ep_findings[i]);
+		env->ep_findings[i] = NULL;
+	}
+	env->n_findings = 0;
+	for (size_t i = 0; i < env->n_diffs; i++) {
+		free(env->ep_diffs[i]);
+		env->ep_diffs[i] = NULL;
+	}
+	env->n_diffs = 0;
+}
+
+void mm_envelope_clone(mm_envelope_t *dst, const mm_envelope_t *src) {
+	if (!dst || !src) return;
+	*dst = *src;
+	dst->summary = src->summary ? strdup(src->summary) : NULL;
+	for (size_t i = 0; i < src->n_tags; i++) {
+		dst->tags[i] = src->tags[i] ? strdup(src->tags[i]) : NULL;
+	}
+	for (size_t i = 0; i < src->n_constraints; i++) {
+		dst->constraints[i] = src->constraints[i] ? strdup(src->constraints[i]) : NULL;
+	}
+	dst->ep_problem = src->ep_problem ? strdup(src->ep_problem) : NULL;
+	dst->ep_request = src->ep_request ? strdup(src->ep_request) : NULL;
+	dst->ep_outcome = src->ep_outcome ? strdup(src->ep_outcome) : NULL;
+	for (size_t i = 0; i < src->n_findings; i++) {
+		dst->ep_findings[i] = src->ep_findings[i] ? strdup(src->ep_findings[i]) : NULL;
+	}
+	for (size_t i = 0; i < src->n_diffs; i++) {
+		dst->ep_diffs[i] = src->ep_diffs[i] ? strdup(src->ep_diffs[i]) : NULL;
+	}
 }
 
 typedef struct {
@@ -311,7 +343,9 @@ int mm_envelope_to_json(const mm_envelope_t *env, char **out_json, size_t *out_l
 	if ((env->ep_problem && env->ep_problem[0]) ||
 	    (env->ep_request && env->ep_request[0]) ||
 	    (env->ep_outcome && env->ep_outcome[0]) ||
-	    env->ep_session_id[0] || env->ep_turn_id > 0) {
+	    env->ep_session_id[0] || env->ep_turn_id > 0 ||
+	    env->ep_run_id[0] || env->ep_leaf_id[0] || env->ep_tool_call_id[0] ||
+	    env->n_approaches > 0 || env->n_findings > 0 || env->n_diffs > 0) {
 		sb_append(&sb, ",\"episode\":{");
 		int first = 1;
 		if (env->ep_problem && env->ep_problem[0]) {
@@ -342,8 +376,89 @@ int mm_envelope_to_json(const mm_envelope_t *env, char **out_json, size_t *out_l
 			char tbuf[48];
 			snprintf(tbuf, sizeof(tbuf), "\"turnId\":%d", env->ep_turn_id);
 			sb_append(&sb, tbuf);
+			first = 0;
+		}
+		if (env->ep_run_id[0]) {
+			if (!first) sb_append(&sb, ",");
+			sb_append(&sb, "\"runId\":");
+			sb_append_json_str(&sb, env->ep_run_id);
+			first = 0;
+		}
+		if (env->ep_leaf_id[0]) {
+			if (!first) sb_append(&sb, ",");
+			sb_append(&sb, "\"leafId\":");
+			sb_append_json_str(&sb, env->ep_leaf_id);
+			first = 0;
+		}
+		if (env->ep_tool_call_id[0]) {
+			if (!first) sb_append(&sb, ",");
+			sb_append(&sb, "\"toolCallId\":");
+			sb_append_json_str(&sb, env->ep_tool_call_id);
+			first = 0;
+		}
+		if (env->n_approaches > 0) {
+			if (!first) sb_append(&sb, ",");
+			sb_append(&sb, "\"approaches\":[");
+			for (size_t i = 0; i < env->n_approaches; i++) {
+				if (i > 0) sb_append(&sb, ",");
+				sb_append(&sb, "{\"approach\":");
+				sb_append_json_str(&sb, env->ep_approaches[i].approach);
+				sb_append(&sb, ",\"outcome\":");
+				sb_append_json_str(&sb, env->ep_approaches[i].outcome[0] ? env->ep_approaches[i].outcome : "worked");
+				if (env->ep_approaches[i].reason[0]) {
+					sb_append(&sb, ",\"reason\":");
+					sb_append_json_str(&sb, env->ep_approaches[i].reason);
+				}
+				sb_append(&sb, "}");
+			}
+			sb_append(&sb, "]");
+			first = 0;
+		}
+		if (env->n_findings > 0) {
+			if (!first) sb_append(&sb, ",");
+			sb_append(&sb, "\"findings\":[");
+			for (size_t i = 0; i < env->n_findings; i++) {
+				if (i > 0) sb_append(&sb, ",");
+				sb_append_json_str(&sb, env->ep_findings[i] ? env->ep_findings[i] : "");
+			}
+			sb_append(&sb, "]");
+			first = 0;
+		}
+		if (env->n_diffs > 0) {
+			if (!first) sb_append(&sb, ",");
+			sb_append(&sb, "\"diffs\":[");
+			for (size_t i = 0; i < env->n_diffs; i++) {
+				if (i > 0) sb_append(&sb, ",");
+				sb_append_json_str(&sb, env->ep_diffs[i] ? env->ep_diffs[i] : "");
+			}
+			sb_append(&sb, "]");
+			first = 0;
 		}
 		sb_append(&sb, "}");
+	}
+
+	if (env->n_history > 0) {
+		sb_append(&sb, ",\"history\":[");
+		for (size_t i = 0; i < env->n_history; i++) {
+			if (i > 0) sb_append(&sb, ",");
+			sb_append(&sb, "{\"from\":");
+			sb_append_json_str(&sb, mm_status_to_str(env->history[i].from));
+			sb_append(&sb, ",\"to\":");
+			sb_append_json_str(&sb, mm_status_to_str(env->history[i].to));
+			sb_append(&sb, ",\"timestamp\":");
+			sb_append_json_str(&sb, env->history[i].timestamp);
+			if (env->history[i].reason[0]) {
+				sb_append(&sb, ",\"reason\":");
+				sb_append_json_str(&sb, env->history[i].reason);
+			}
+			if (env->history[i].evidence_ref > 0) {
+				char ebuf[48];
+				snprintf(ebuf, sizeof(ebuf), ",\"evidenceRef\":%u", env->history[i].evidence_ref);
+				sb_append(&sb, ebuf);
+			}
+			sb_append(&sb, "}");
+		}
+		sb_append(&sb, "]");
 	}
 
 	if (env->used_count > 0 || env->irrelevant_count > 0 || env->obsolete_count > 0) {
@@ -503,6 +618,79 @@ static size_t extract_str_array(const char *json, size_t len, const char *key, c
 	return n;
 }
 
+static const char *find_matching_brace(const char *start, const char *end) {
+	if (!start || start >= end || *start != '{') return NULL;
+	int depth = 0;
+	bool in_str = false;
+	for (const char *p = start; p < end; p++) {
+		if (in_str) {
+			if (*p == '\\' && p + 1 < end) p++;
+			else if (*p == '"') in_str = false;
+		} else {
+			if (*p == '"') in_str = true;
+			else if (*p == '{') depth++;
+			else if (*p == '}') {
+				depth--;
+				if (depth == 0) return p;
+			}
+		}
+	}
+	return NULL;
+}
+
+static size_t extract_approaches(const char *json, size_t len, mm_approach_t *out, size_t cap) {
+	const char *v = find_json_key(json, len, "approaches");
+	if (!v || *v != '[') return 0;
+	const char *end = json + len;
+	const char *p = v + 1;
+	size_t n = 0;
+	while (p < end && *p != ']' && n < cap) {
+		while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' || *p == ','))
+			p++;
+		if (p >= end || *p == ']') break;
+		if (*p != '{') break;
+		const char *obj_end = find_matching_brace(p, end);
+		if (!obj_end) break;
+		size_t olen = (size_t)(obj_end - p + 1);
+		memset(&out[n], 0, sizeof(out[n]));
+		extract_str_into(p, olen, "approach", out[n].approach, sizeof(out[n].approach));
+		extract_str_into(p, olen, "outcome", out[n].outcome, sizeof(out[n].outcome));
+		extract_str_into(p, olen, "reason", out[n].reason, sizeof(out[n].reason));
+		if (out[n].approach[0]) n++;
+		p = obj_end + 1;
+	}
+	return n;
+}
+
+static size_t extract_history(const char *json, size_t len, mm_lifecycle_transition_t *out, size_t cap) {
+	const char *v = find_json_key(json, len, "history");
+	if (!v || *v != '[') return 0;
+	const char *end = json + len;
+	const char *p = v + 1;
+	size_t n = 0;
+	while (p < end && *p != ']' && n < cap) {
+		while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' || *p == ','))
+			p++;
+		if (p >= end || *p == ']') break;
+		if (*p != '{') break;
+		const char *obj_end = find_matching_brace(p, end);
+		if (!obj_end) break;
+		size_t olen = (size_t)(obj_end - p + 1);
+		memset(&out[n], 0, sizeof(out[n]));
+		char from_s[32] = {0}, to_s[32] = {0};
+		extract_str_into(p, olen, "from", from_s, sizeof(from_s));
+		extract_str_into(p, olen, "to", to_s, sizeof(to_s));
+		out[n].from = mm_status_from_str(from_s);
+		out[n].to   = mm_status_from_str(to_s);
+		extract_str_into(p, olen, "timestamp", out[n].timestamp, sizeof(out[n].timestamp));
+		extract_str_into(p, olen, "reason", out[n].reason, sizeof(out[n].reason));
+		out[n].evidence_ref = (uint32_t)extract_int(p, olen, "evidenceRef", 0);
+		n++;
+		p = obj_end + 1;
+	}
+	return n;
+}
+
 static bool is_iso_date_prefix(const char *s, size_t len) {
 	if (len < 11) return false;
 	return isdigit((unsigned char)s[0]) && isdigit((unsigned char)s[1]) &&
@@ -553,7 +741,6 @@ int mm_envelope_from_json(const char *json_or_raw, size_t len, mm_envelope_t *ou
 
 	out_env->is_anchor = extract_bool(body, blen, "isAnchor", false);
 	out_env->standing  = extract_bool(body, blen, "standing", false);
-	if (out_env->standing) out_env->is_anchor = true;
 
 	out_env->supersedes    = (uint32_t)extract_int(body, blen, "supersedes", 0);
 	out_env->superseded_by = (uint32_t)extract_int(body, blen, "supersededBy", 0);
@@ -578,6 +765,14 @@ int mm_envelope_from_json(const char *json_or_raw, size_t len, mm_envelope_t *ou
 	out_env->ep_outcome = extract_str_alloc(body, blen, "outcome");
 	extract_str_into(body, blen, "sessionId", out_env->ep_session_id, sizeof(out_env->ep_session_id));
 	out_env->ep_turn_id = (int)extract_int(body, blen, "turnId", 0);
+	extract_str_into(body, blen, "runId", out_env->ep_run_id, sizeof(out_env->ep_run_id));
+	extract_str_into(body, blen, "leafId", out_env->ep_leaf_id, sizeof(out_env->ep_leaf_id));
+	extract_str_into(body, blen, "toolCallId", out_env->ep_tool_call_id, sizeof(out_env->ep_tool_call_id));
+
+	out_env->n_approaches = extract_approaches(body, blen, out_env->ep_approaches, MM_MAX_APPROACHES);
+	out_env->n_findings   = extract_str_array(body, blen, "findings", out_env->ep_findings, MM_MAX_FINDINGS);
+	out_env->n_diffs      = extract_str_array(body, blen, "diffs", out_env->ep_diffs, MM_MAX_DIFFS);
+	out_env->n_history    = extract_history(body, blen, out_env->history, MM_MAX_HISTORY);
 
 	out_env->used_count       = (int)extract_int(body, blen, "usedCount", 0);
 	out_env->irrelevant_count = (int)extract_int(body, blen, "irrelevantCount", 0);
@@ -611,8 +806,18 @@ int mm_payload_encode(const mm_envelope_t *env,
 			free(json_str);
 			return -1;
 		}
-		*out_bytes = htok_buf;
-		*out_len = htok_len;
+		uint8_t *combined = (uint8_t *)malloc(htok_len + 1 + json_len + 1);
+		if (combined) {
+			memcpy(combined, htok_buf, htok_len);
+			combined[htok_len] = 0;
+			memcpy(combined + htok_len + 1, json_str, json_len + 1);
+			free(htok_buf);
+			*out_bytes = combined;
+			*out_len = htok_len + 1 + json_len;
+		} else {
+			*out_bytes = htok_buf;
+			*out_len = htok_len;
+		}
 	}
 
 	if (out_json) {
@@ -648,6 +853,19 @@ int mm_payload_decode(const void *data, size_t len, mm_envelope_t *out_env) {
 	}
 
 	if (has_htok_magic(payload, plen)) {
+		for (size_t i = 12; i + 2 < plen; i++) {
+			if (payload[i] == 0xaa && payload[i + 1] == 0x00 && payload[i + 2] == '{') {
+				const char *jptr = (const char *)(payload + i + 2);
+				size_t jlen = plen - (i + 2);
+				int rc = mm_envelope_from_json(jptr, jlen, out_env);
+				if (rc == 0) {
+					if (!out_env->timestamp[0] && date_hint[0]) {
+						snprintf(out_env->timestamp, sizeof(out_env->timestamp), "%sT00:00:00Z", date_hint);
+					}
+					return 0;
+				}
+			}
+		}
 		char *unpacked_json = NULL;
 		size_t unpacked_len = 0;
 		if (corm_htok_unpack(payload, plen, &unpacked_json, &unpacked_len) == 0 && unpacked_json) {
@@ -675,7 +893,11 @@ bool mm_window_for_level(mm_level_t level, int64_t now_epoch_sec,
 
 	time_t t = (now_epoch_sec > 0) ? (time_t)now_epoch_sec : time(NULL);
 	struct tm tm_now;
+#ifdef _WIN32
+	localtime_s(&tm_now, &t);
+#else
 	localtime_r(&t, &tm_now);
+#endif
 
 	if (level == MM_LEVEL_L1) {
 		struct tm tm_a = tm_now;

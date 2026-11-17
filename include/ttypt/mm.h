@@ -87,12 +87,30 @@ const char           *mm_sym_kind_to_str(mm_sym_kind_t kind);
 mm_sym_kind_t         mm_sym_kind_from_str(const char *str);
 
 /* ============================================================================
- * 2. Memory Envelope & HTOK v4 Payload Codec (mm_payload.c)
+ * 2. Memory Envelope & HTOK v4 Payload Codec (libmm.c)
  * ============================================================================ */
 
 #define MM_MAX_EVIDENCE    32
 #define MM_MAX_TAGS        16
 #define MM_MAX_CONSTRAINTS 16
+#define MM_MAX_APPROACHES  8
+#define MM_MAX_FINDINGS    8
+#define MM_MAX_DIFFS       8
+#define MM_MAX_HISTORY     8
+
+typedef struct {
+	char approach[256];
+	char outcome[32]; /**< "worked", "failed", "abandoned" */
+	char reason[256];
+} mm_approach_t;
+
+typedef struct {
+	mm_epistemic_status_t from;
+	mm_epistemic_status_t to;
+	char                  timestamp[32];
+	char                  reason[256];
+	uint32_t              evidence_ref;
+} mm_lifecycle_transition_t;
 
 typedef struct {
 	mm_level_t             level;
@@ -126,6 +144,19 @@ typedef struct {
 	char                  *ep_outcome;
 	char                   ep_session_id[128];
 	int                    ep_turn_id;
+	char                   ep_run_id[128];
+	char                   ep_leaf_id[128];
+	char                   ep_tool_call_id[128];
+	mm_approach_t          ep_approaches[MM_MAX_APPROACHES];
+	size_t                 n_approaches;
+	char                  *ep_findings[MM_MAX_FINDINGS];
+	size_t                 n_findings;
+	char                  *ep_diffs[MM_MAX_DIFFS];
+	size_t                 n_diffs;
+
+	/* Epistemic lifecycle transition history */
+	mm_lifecycle_transition_t history[MM_MAX_HISTORY];
+	size_t                    n_history;
 
 	/* Utility feedback counters */
 	int                    used_count;
@@ -135,6 +166,7 @@ typedef struct {
 
 void mm_envelope_init(mm_envelope_t *env);
 void mm_envelope_free(mm_envelope_t *env);
+void mm_envelope_clone(mm_envelope_t *dst, const mm_envelope_t *src);
 
 /**
  * Serialize an mm_envelope_t into a canonical JSON string.
@@ -164,7 +196,7 @@ int mm_payload_decode(const void *data, size_t len, mm_envelope_t *out_env);
 /**
  * Compute the libjoint temporal window [since, until] for a mipmap level
  * relative to a given UTC epoch timestamp.
- * Returns true if a bounded window applies (L0=1d, L1=7d, L2=30d), false for L3 (unbounded).
+ * Returns true if a bounded window applies (L1=1d, L2=month), false for L0/L3.
  */
 bool mm_window_for_level(mm_level_t level, int64_t now_epoch_sec,
                          char since_out[16], char until_out[16]);
@@ -227,7 +259,7 @@ int    mm_filter_and_enrich(mm_candidate_t *candidates, size_t n_candidates,
 void   mm_candidates_free(mm_candidate_t *candidates, size_t count);
 
 /* ============================================================================
- * 4. Context & Two-Tier Lifecycle (mm_ctx.c & mm_ops.c)
+ * 4. Context & Two-Tier Lifecycle (mm_ctx.c)
  * ============================================================================ */
 
 typedef struct {
@@ -275,6 +307,16 @@ typedef struct {
 	uint32_t               supersedes_ref;
 	const char            *session_id;
 	int                    turn_id;
+	const char            *run_id;
+	const char            *leaf_id;
+	const mm_approach_t   *approaches;
+	size_t                 n_approaches;
+	const char           **findings;
+	size_t                 n_findings;
+	const char           **diffs;
+	size_t                 n_diffs;
+	const char           **tests_passed;
+	size_t                 n_tests_passed;
 } mm_record_req_t;
 
 int mm_record(mm_ctx_t *ctx, const mm_record_req_t *req,
@@ -288,38 +330,85 @@ int mm_list_refs(mm_ctx_t *ctx, mm_tier_t tier, uint32_t **out_refs, size_t *out
 typedef struct {
 	mm_tier_t              tier;
 	uint32_t               ref;
-	const char            *action; /**< "confirm" | "contradict" | "supersede" | "helpful" | "harmful" | "obsolete" */
+	const char            *action; /**< "inspect" | "update_lifecycle" | "confirm" | "contradict" | "supersede" | "helpful" | "harmful" | "obsolete" */
 	const char            *reason;
 	uint32_t               superseded_by_ref;
+	mm_epistemic_status_t  target_lifecycle;
+	uint32_t               evidence_ref;
+	const char            *direction; /**< "down" | "up" */
+	int                    depth;
 } mm_review_req_t;
 
 int mm_review(mm_ctx_t *ctx, const mm_review_req_t *req);
+int mm_review_ex(mm_ctx_t *ctx, const mm_review_req_t *req, char **out_buf, size_t *out_len);
+
+int mm_validate_lifecycle_transition(mm_ctx_t *ctx, mm_tier_t tier,
+                                     const mm_envelope_t *env,
+                                     mm_epistemic_status_t target,
+                                     const char *reason,
+                                     uint32_t evidence_ref,
+                                     char *err_buf, size_t err_cap);
+
+int mm_propagate_truth_maintenance(mm_ctx_t *ctx, mm_tier_t tier,
+                                   uint32_t changed_ref,
+                                   mm_epistemic_status_t new_state,
+                                   uint32_t **out_downgraded, size_t *out_count);
+
+int mm_traverse(mm_ctx_t *ctx, mm_tier_t tier, uint32_t start_ref,
+                const char *direction, int max_depth,
+                char **out_buf, size_t *out_len);
+
+int mm_build_memory_overview(mm_ctx_t *ctx, mm_tier_t tier, int max_per_bucket,
+                             char **out_buf, size_t *out_len);
+
+int mm_evaluate_guardrail(mm_ctx_t *ctx, const char *intent_text,
+                          const char *file_path, const char *symbol_name,
+                          char **out_buf, size_t *out_len);
+
+int mm_observe_verification_command(mm_ctx_t *ctx, const char *command,
+                                    int exit_code, const char *output_snippet,
+                                    uint32_t *out_promoted_ref);
+int mm_record_file_mutation(mm_ctx_t *ctx, const char *file_path);
+
+int mm_sync_standing_directives(mm_ctx_t *ctx);
+int mm_synthesize_reinforcement(mm_ctx_t *ctx, const char *reason,
+                                const char *milestone_summary,
+                                char **out_buf, size_t *out_len);
+
+int mm_consolidate_scopes_and_principles(mm_ctx_t *ctx, mm_tier_t tier,
+                                         int *out_l2_created, int *out_l3_created);
 
 typedef struct {
-	mm_scope_t  scope;
-	mm_tier_t   tier;
-	const char *query;
-	const char *symbol;
-	const char *file;
-	const char *kind;
-	const char *neighbors;    /**< "none" | "callers" | "callees" | "both" */
-	const char *trace;        /**< symbol name for call-graph trace */
-	const char *direction;    /**< "inbound" | "outbound" | "both" */
-	int         depth;        /**< trace or diff depth (default 2) */
-	bool        diff;         /**< git diff blast-radius mode */
-	bool        overview;     /**< architecture or persistent lore overview */
-	const char *diagnose;     /**< stack trace or compiler error fault localization */
-	const char *guardrail;    /**< counterfactual pre-flight check */
-	mm_tier_t   zoom_tier;
-	uint32_t    zoom_ref;
-	const char *session_id;
-	int         zoom_turn;
-	int         line_start;
-	int         line_end;
-	int         limit;
-	bool        include_l0;
-	bool        dedupe;
-	bool        json_output;
+	mm_scope_t         scope;
+	mm_tier_t          tier;
+	const char        *query;
+	const char        *symbol;
+	const char *const *symbols;
+	size_t             n_symbols;
+	const char        *parent_symbol;
+	const char        *file;
+	const char        *kind;
+	const char        *neighbors;    /**< "none" | "callers" | "callees" | "both" */
+	const char        *trace;        /**< symbol name for call-graph trace */
+	const char        *direction;    /**< "inbound" | "outbound" | "both" */
+	int                depth;        /**< trace or diff depth (default 2) */
+	bool               diff;         /**< git diff blast-radius mode */
+	bool               overview;     /**< architecture or persistent lore overview */
+	const char        *diagnose;     /**< stack trace or compiler error fault localization */
+	const char        *guardrail;    /**< counterfactual pre-flight check */
+	mm_tier_t          zoom_tier;
+	uint32_t           zoom_ref;
+	const char        *session_id;
+	int                zoom_turn;
+	int                tool_index;   /**< 1-based tool output index in session zoomTurn */
+	const char        *lineage;      /**< "active" | "all" */
+	int                line_start;
+	int                line_end;
+	int                limit;
+	bool               include_l0;
+	bool               include_evidence;
+	bool               dedupe;
+	bool               json_output;
 } mm_recall_req_t;
 
 int mm_recall(mm_ctx_t *ctx, const mm_recall_req_t *req, char **out_buf, size_t *out_len);
@@ -335,12 +424,14 @@ typedef struct {
 	uint32_t       ref;
 	uint32_t       file_id;
 	char           name[128];
+	char           parent_symbol[128];
 	char           qualified_name[256];
 	mm_sym_kind_t  kind;
 	char           file_path[256];
 	int            start_line;
 	int            end_line;
 	char           signature[256];
+	char           doc_comment[256];
 	char           raw_callees[MM_CODE_MAX_CALLEES][64];
 	size_t         n_raw_callees;
 	uint32_t       callees[MM_CODE_MAX_EDGES];
@@ -387,6 +478,12 @@ int  mm_code_read_symbol(const mm_code_index_t *idx, const char *symbol_name,
                          const char *file_filter, const char *neighbors,
                          int line_start, int line_end,
                          char **out_buf, size_t *out_len);
+int  mm_code_read_symbols_ex(const mm_code_index_t *idx,
+                             const char *const *symbols, size_t n_symbols,
+                             const char *parent_symbol,
+                             const char *file_filter, const char *neighbors,
+                             int line_start, int line_end,
+                             char **out_buf, size_t *out_len);
 int  mm_code_trace(const mm_code_index_t *idx, const char *symbol_name,
                    const char *direction, int max_depth,
                    char **out_buf, size_t *out_len);
@@ -396,15 +493,66 @@ int  mm_code_diff_impact(const mm_code_index_t *idx, int depth,
 int  mm_code_diagnose(const mm_code_index_t *idx, const char *trace_text,
                       int depth, char **out_buf, size_t *out_len);
 
+int  mm_code_resolve_cross_boundary_pairs(const mm_code_index_t *idx,
+                                          const char *symbol_name,
+                                          const char *file_path,
+                                          char **out_buf, size_t *out_len);
+int  mm_code_detect_xy_mismatches(const mm_code_index_t *idx,
+                                  char **out_buf, size_t *out_len);
+int  mm_code_first_touch_dossier(const mm_code_index_t *idx,
+                                 const char *file_or_symbol,
+                                 char **out_buf, size_t *out_len);
+
+int  mm_lore_bind_symbol(mm_ctx_t *ctx, uint32_t mem_ref, const char *summary,
+                         const char *symbol_name, const char *file_path);
+int  mm_lore_verify_drift(mm_ctx_t *ctx, const char *symbol_or_file,
+                          char **out_buf, size_t *out_len);
+
+int  mm_context_record_snapshot(mm_ctx_t *ctx, const char *session_id,
+                                const char *file_path, int turn_idx);
+int  mm_context_check_drift(mm_ctx_t *ctx, const char *session_id,
+                            const char *file_path,
+                            char **out_buf, size_t *out_len);
+
+int  mm_swarm_record_lease(mm_ctx_t *ctx, const char *session_id,
+                           const char *symbol_name, const char *file_path,
+                           const char *mode);
+int  mm_swarm_query_leases(mm_ctx_t *ctx, const char *current_session_id,
+                           const char *symbol_name, const char *file_path,
+                           char **out_buf, size_t *out_len);
+
 /* ============================================================================
- * 6. Session Transcript Engine, Intent Priming & MCP Server
+ * 6. Session Transcript Engine, Intent Priming & MCP Server (mm_session.c)
  * ============================================================================ */
+
+typedef struct {
+	const char *session_id;
+	int         turn_idx;
+	const char *role;          /**< "user" | "assistant" | "tool" | "compaction" */
+	const char *text;
+	const char *entry_id;      /**< Branch DAG node ID */
+	const char *parent_id;     /**< Branch DAG parent ID */
+	const char *tool_name;
+	int         tool_index;    /**< 1-based tool execution index within turn */
+	int         exit_code;
+	bool        has_exit_code;
+	const char *files_touched; /**< Comma-separated paths */
+	const char *error_snippet;
+} mm_session_event_t;
 
 int mm_session_ingest_turn(mm_ctx_t *ctx, mm_tier_t tier, const char *session_id,
                            int turn_idx, const char *role, const char *text);
+int mm_session_ingest_event(mm_ctx_t *ctx, mm_tier_t tier, const mm_session_event_t *ev);
 int mm_session_recall(mm_ctx_t *ctx, mm_tier_t tier, const char *session_id,
                       const char *query, int zoom_turn, int line_start, int line_end,
                       int limit, char **out_buf, size_t *out_len);
+int mm_session_recall_ex(mm_ctx_t *ctx, mm_tier_t tier, const char *session_id,
+                         const char *query, int zoom_turn, int tool_index,
+                         const char *lineage, int line_start, int line_end,
+                         int limit, char **out_buf, size_t *out_len);
+int mm_session_compact(mm_ctx_t *ctx, mm_tier_t tier, const char *session_id,
+                       const char *custom_instructions,
+                       char **out_summary, size_t *out_len);
 
 typedef enum {
 	MM_INTENT_STANDALONE = 0,

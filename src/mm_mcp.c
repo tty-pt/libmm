@@ -132,9 +132,9 @@ int mm_mcp_serve_stdio(mm_ctx_t *ctx) {
 			fflush(stdout);
 		} else if (strcmp(method, "tools/list") == 0 && has_id) {
 			printf("{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{\"tools\":["
-			       "{\"name\":\"memory_recall\",\"description\":\"Multi-axis codebase, session, and two-tier persistent memory recall.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"},\"scope\":{\"type\":\"string\",\"enum\":[\"all\",\"code\",\"session\",\"persistent\"]},\"tier\":{\"type\":\"string\",\"enum\":[\"auto\",\"global\",\"project\",\"both\"]},\"symbol\":{\"type\":\"string\"},\"file\":{\"type\":\"string\"},\"kind\":{\"type\":\"string\"},\"trace\":{\"type\":\"string\"},\"direction\":{\"type\":\"string\"},\"depth\":{\"type\":\"integer\"},\"diff\":{\"type\":\"boolean\"},\"overview\":{\"type\":\"boolean\"},\"diagnose\":{\"type\":\"string\"},\"zoomRef\":{\"type\":\"integer\"},\"zoomTurn\":{\"type\":\"integer\"},\"limit\":{\"type\":\"integer\"}}}},"
+			       "{\"name\":\"memory_recall\",\"description\":\"Multi-axis codebase, session, and two-tier persistent memory recall.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"},\"scope\":{\"type\":\"string\",\"enum\":[\"all\",\"code\",\"session\",\"persistent\"]},\"tier\":{\"type\":\"string\",\"enum\":[\"auto\",\"global\",\"project\",\"both\"]},\"symbol\":{\"type\":\"string\"},\"parentSymbol\":{\"type\":\"string\"},\"file\":{\"type\":\"string\"},\"kind\":{\"type\":\"string\"},\"trace\":{\"type\":\"string\"},\"direction\":{\"type\":\"string\"},\"depth\":{\"type\":\"integer\"},\"diff\":{\"type\":\"boolean\"},\"overview\":{\"type\":\"boolean\"},\"diagnose\":{\"type\":\"string\"},\"guardrail\":{\"type\":\"string\"},\"zoomRef\":{\"type\":\"integer\"},\"zoomTurn\":{\"type\":\"integer\"},\"toolIndex\":{\"type\":\"integer\"},\"lineage\":{\"type\":\"string\",\"enum\":[\"active\",\"all\"]},\"limit\":{\"type\":\"integer\"}}}},"
 			       "{\"name\":\"memory_record\",\"description\":\"Record a persistent episode, decision, anchor, or global standing directive.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"problem\":{\"type\":\"string\"},\"type\":{\"type\":\"string\"},\"standing\":{\"type\":\"boolean\"},\"anchor\":{\"type\":\"boolean\"},\"tier\":{\"type\":\"string\",\"enum\":[\"auto\",\"global\",\"project\"]}},\"required\":[\"problem\"]}},"
-			       "{\"name\":\"memory_review\",\"description\":\"Confirm, contradict, supersede, or rate a persistent memory reference.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"ref\":{\"type\":\"integer\"},\"action\":{\"type\":\"string\",\"enum\":[\"confirm\",\"contradict\",\"supersede\",\"helpful\",\"harmful\",\"obsolete\"]},\"tier\":{\"type\":\"string\",\"enum\":[\"auto\",\"global\",\"project\"]}},\"required\":[\"ref\",\"action\"]}}"
+			       "{\"name\":\"memory_review\",\"description\":\"Inspect, update lifecycle, confirm, contradict, supersede, or rate a persistent memory reference.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"ref\":{\"type\":\"integer\"},\"action\":{\"type\":\"string\",\"enum\":[\"inspect\",\"update_lifecycle\",\"confirm\",\"contradict\",\"supersede\",\"helpful\",\"harmful\",\"obsolete\"]},\"lifecycle\":{\"type\":\"string\"},\"reason\":{\"type\":\"string\"},\"direction\":{\"type\":\"string\"},\"tier\":{\"type\":\"string\",\"enum\":[\"auto\",\"global\",\"project\"]}},\"required\":[\"ref\",\"action\"]}}"
 			       "]}}\n", id_raw);
 			fflush(stdout);
 		} else if (strcmp(method, "tools/call") == 0 && has_id) {
@@ -147,18 +147,22 @@ int mm_mcp_serve_stdio(mm_ctx_t *ctx) {
 				mm_recall_req_t req;
 				memset(&req, 0, sizeof(req));
 				char scope_s[32] = {0}, tier_s[32] = {0};
-				char query_s[512] = {0}, sym_s[128] = {0}, file_s[256] = {0};
+				char query_s[512] = {0}, sym_s[128] = {0}, psym_s[128] = {0}, file_s[256] = {0};
 				char kind_s[64] = {0}, trace_s[128] = {0}, dir_s[32] = {0}, diag_s[512] = {0};
+				char guard_s[512] = {0}, lin_s[32] = {0};
 
 				mcp_extract_str(args_json, "scope", scope_s, sizeof(scope_s));
 				mcp_extract_str(args_json, "tier", tier_s, sizeof(tier_s));
 				mcp_extract_str(args_json, "query", query_s, sizeof(query_s));
 				mcp_extract_str(args_json, "symbol", sym_s, sizeof(sym_s));
+				mcp_extract_str(args_json, "parentSymbol", psym_s, sizeof(psym_s));
 				mcp_extract_str(args_json, "file", file_s, sizeof(file_s));
 				mcp_extract_str(args_json, "kind", kind_s, sizeof(kind_s));
 				mcp_extract_str(args_json, "trace", trace_s, sizeof(trace_s));
 				mcp_extract_str(args_json, "direction", dir_s, sizeof(dir_s));
 				mcp_extract_str(args_json, "diagnose", diag_s, sizeof(diag_s));
+				mcp_extract_str(args_json, "guardrail", guard_s, sizeof(guard_s));
+				mcp_extract_str(args_json, "lineage", lin_s, sizeof(lin_s));
 
 				if (!strcmp(scope_s, "code")) req.scope = MM_SCOPE_CODE;
 				else if (!strcmp(scope_s, "session")) req.scope = MM_SCOPE_SESSION;
@@ -169,20 +173,24 @@ int mm_mcp_serve_stdio(mm_ctx_t *ctx) {
 				else if (!strcmp(tier_s, "project")) req.tier = MM_TIER_PROJECT;
 				else req.tier = MM_TIER_BOTH;
 
-				if (query_s[0]) req.query     = query_s;
-				if (sym_s[0])   req.symbol    = sym_s;
-				if (file_s[0])  req.file      = file_s;
-				if (kind_s[0])  req.kind      = kind_s;
-				if (trace_s[0]) req.trace     = trace_s;
-				if (dir_s[0])   req.direction = dir_s;
-				if (diag_s[0])  req.diagnose  = diag_s;
+				if (query_s[0]) req.query         = query_s;
+				if (sym_s[0])   req.symbol        = sym_s;
+				if (psym_s[0])  req.parent_symbol = psym_s;
+				if (file_s[0])  req.file          = file_s;
+				if (kind_s[0])  req.kind          = kind_s;
+				if (trace_s[0]) req.trace         = trace_s;
+				if (dir_s[0])   req.direction     = dir_s;
+				if (diag_s[0])  req.diagnose      = diag_s;
+				if (guard_s[0]) req.guardrail     = guard_s;
+				if (lin_s[0])   req.lineage       = lin_s;
 
-				req.depth     = mcp_extract_int(args_json, "depth", 2);
-				req.diff      = mcp_extract_bool(args_json, "diff", false);
-				req.overview  = mcp_extract_bool(args_json, "overview", false);
-				req.zoom_ref  = (uint32_t)mcp_extract_int(args_json, "zoomRef", 0);
-				req.zoom_turn = mcp_extract_int(args_json, "zoomTurn", 0);
-				req.limit     = mcp_extract_int(args_json, "limit", 10);
+				req.depth      = mcp_extract_int(args_json, "depth", 2);
+				req.diff       = mcp_extract_bool(args_json, "diff", false);
+				req.overview   = mcp_extract_bool(args_json, "overview", false);
+				req.zoom_ref   = (uint32_t)mcp_extract_int(args_json, "zoomRef", 0);
+				req.zoom_turn  = mcp_extract_int(args_json, "zoomTurn", 0);
+				req.tool_index = mcp_extract_int(args_json, "toolIndex", 0);
+				req.limit      = mcp_extract_int(args_json, "limit", 10);
 
 				char *out = NULL;
 				if (mm_recall(ctx, &req, &out, NULL) == 0 && out) {
@@ -223,21 +231,38 @@ int mm_mcp_serve_stdio(mm_ctx_t *ctx) {
 			} else if (strcmp(tool_name, "memory_review") == 0) {
 				mm_review_req_t req;
 				memset(&req, 0, sizeof(req));
-				char act_s[32] = {0}, tier_s[32] = {0};
+				char act_s[32] = {0}, tier_s[32] = {0}, lc_s[32] = {0}, reason_s[512] = {0}, dir_s[32] = {0};
 				mcp_extract_str(args_json, "action", act_s, sizeof(act_s));
 				mcp_extract_str(args_json, "tier", tier_s, sizeof(tier_s));
+				mcp_extract_str(args_json, "lifecycle", lc_s, sizeof(lc_s));
+				mcp_extract_str(args_json, "reason", reason_s, sizeof(reason_s));
+				mcp_extract_str(args_json, "direction", dir_s, sizeof(dir_s));
 				req.ref    = (uint32_t)mcp_extract_int(args_json, "ref", 0);
 				req.action = act_s;
+				if (lc_s[0])     req.target_lifecycle = mm_status_from_str(lc_s);
+				if (reason_s[0]) req.reason = reason_s;
+				if (dir_s[0])    req.direction = dir_s;
+				req.depth = mcp_extract_int(args_json, "depth", 4);
+				req.evidence_ref = (uint32_t)mcp_extract_int(args_json, "evidenceRef", 0);
+				req.superseded_by_ref = (uint32_t)mcp_extract_int(args_json, "supersededBy", 0);
+
 				if (!strcmp(tier_s, "global")) req.tier = MM_TIER_GLOBAL;
 				else if (!strcmp(tier_s, "project")) req.tier = MM_TIER_PROJECT;
 				else req.tier = MM_TIER_AUTO;
 
-				if (mm_review(ctx, &req) == 0) {
-					char msg[128];
-					snprintf(msg, sizeof(msg), "Reviewed ref %u with action '%s'", req.ref, act_s);
-					mcp_send_tool_text(id_raw, msg, false);
+				char *out = NULL;
+				if (mm_review_ex(ctx, &req, &out, NULL) == 0) {
+					if (out && out[0]) {
+						mcp_send_tool_text(id_raw, out, false);
+					} else {
+						char msg[128];
+						snprintf(msg, sizeof(msg), "Reviewed ref %u with action '%s'", req.ref, act_s);
+						mcp_send_tool_text(id_raw, msg, false);
+					}
+					free(out);
 				} else {
-					mcp_send_tool_text(id_raw, "memory_review failed", true);
+					mcp_send_tool_text(id_raw, out ? out : "memory_review failed", true);
+					free(out);
 				}
 			} else {
 				mcp_send_tool_text(id_raw, "Unknown tool", true);
