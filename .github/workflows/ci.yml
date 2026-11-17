@@ -12,8 +12,10 @@ jobs:
       name: libmm
       run_tests: true
       publish_to: "deb,apk,rpm,pacman,brew,openbsd,winget"
-      deps: "libstele,libcorm,libjoint,liblemma,libsepal,libislet"
-      deps_pacman: "libstele,libcorm,libjoint,liblemma,libsepal,libislet"
+      deps: "libstele,libcorm"
+      deps_deb: "libstele,libcorm,libjoint,liblemma,libsepal,libislet"
+      deps_pacman: "libstele,libcorm"
+      deps_openbsd: "libstele,libcorm"
       deps_winget: "mingw-w64-x86_64-xxhash,mingw-w64-x86_64-mman-win32"
       deps_winget_tty: "libstele,libcorm"
     secrets: inherit
