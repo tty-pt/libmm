@@ -1,0 +1,10 @@
+prefix=/usr/local
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+
+Name: libmm
+Description: Pure-C Two-Tier Multi-Axis Memory Engine & Universal Tooling
+Version: 1.0.0
+Libs: -L${libdir} -lmm -lcorm -lstele -lm
+Cflags: -I${includedir}
