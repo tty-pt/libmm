@@ -11,7 +11,7 @@
  *   - Tier 1 (MM_TIER_GLOBAL): Operator-wide standing directives, anchors,
  *     and desktop/voice history (~/.local/share/mm/global)
  *   - Tier 2 (MM_TIER_PROJECT): Repository-scoped lore, codebase symbol graph,
- *     and coding session logs (<repo>/.mm or ~/.pi/agent/mm/<slug>)
+ *     and coding session logs (`<repo>/.mm` or `~/.pi/agent/mm/<slug>`)
  */
 
 #include <stddef.h>
@@ -28,10 +28,11 @@ extern "C" {
 
 typedef struct mm_ctx mm_ctx_t;
 
+/** @brief Storage tier selection for federated two-tier memory operations. */
 typedef enum {
 	MM_TIER_AUTO    = 0, /**< Route writes to PROJECT if open (or GLOBAL if standing=true); query BOTH */
 	MM_TIER_GLOBAL  = 1, /**< Tier 1: ~/.local/share/mm/global */
-	MM_TIER_PROJECT = 2, /**< Tier 2: <repo>/.mm or ~/.pi/agent/mm/<slug> */
+	MM_TIER_PROJECT = 2, /**< Tier 2: `<repo>/.mm` or `~/.pi/agent/mm/<slug>` */
 	MM_TIER_BOTH    = 3  /**< Explicit federated read across GLOBAL + PROJECT */
 } mm_tier_t;
 

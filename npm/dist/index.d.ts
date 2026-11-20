@@ -139,13 +139,13 @@ export interface MmContextOptions {
 }
 
 export interface MmRecordRequest {
-  summary: string;
+  problem?: string;
+  summary?: string;
   level?: MmLevel;
   tier?: MmTier;
   type?: string;
   tags?: string;
   constraints?: string;
-  problem?: string;
   request?: string;
   outcome?: string;
   rootCause?: string;
@@ -218,6 +218,23 @@ export interface MmReviewRequest {
 
 export declare const nativeBinding: Record<string, any> | null;
 export declare function isNativeAvailable(): boolean;
+export declare function getMmWasm(): WebAssembly.Instance;
+export declare function wasmRecord(
+  problem: string,
+  outcome?: string,
+  subsystem?: string,
+  standing?: boolean
+): number;
+export declare function wasmRecallJson(
+  query?: string,
+  subsystem?: string,
+  limit?: number
+): string;
+export declare function wasmReview(
+  ref: number,
+  action: MmReviewAction | string,
+  reason?: string
+): number;
 export declare function adaptiveRrfK(candidateCount: number): number;
 export declare function isTechnicalInquiry(query: string): boolean;
 export declare function isCleanSummaryText(summary: string): boolean;
@@ -231,7 +248,7 @@ export declare function fuseRankingsRRF(
 ): MmRankedRef[];
 export declare function computeRankingScore(cand: MmCandidate, crit?: MmFilterCriteria): number;
 export declare function filterAndEnrich(candidates: MmCandidate[], crit?: MmFilterCriteria): MmCandidate[];
-export declare function payloadEncode(envelopeOrJson: MmEnvelope | string): Uint8Array;
+export declare function payloadEncode(envelopeOrJson: MmEnvelope | string): { bytes: Uint8Array; json: string };
 export declare function payloadDecode(bytesOrStr: Uint8Array | string): MmEnvelope;
 export declare function windowForLevel(
   level: MmLevel | string,
@@ -273,7 +290,7 @@ export declare class MmCodeIndex {
   constructor(rootDir?: string);
   search(query?: string, fileFilter?: string, kindFilter?: string, limit?: number): string;
   readSymbols(
-    symbols: string,
+    symbols: string[] | string,
     opts?: {
       parentSymbol?: string;
       file?: string;

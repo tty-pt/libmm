@@ -106,13 +106,23 @@ static int mkdir_p(const char *path) {
 }
 
 static bool dir_exists(const char *path) {
+#ifdef __wasm__
+	(void)path;
+	return false;
+#else
 	struct stat st;
 	return path && *path && stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+#endif
 }
 
 static bool file_exists(const char *path) {
+#ifdef __wasm__
+	(void)path;
+	return false;
+#else
 	struct stat st;
 	return path && *path && stat(path, &st) == 0 && !S_ISDIR(st.st_mode);
+#endif
 }
 
 static void now_iso_utc(char *out, size_t cap) {
@@ -124,6 +134,10 @@ static void now_iso_utc(char *out, size_t cap) {
 
 static void discover_repo_root(const char *start_cwd, char *root_out, size_t cap) {
 	root_out[0] = '\0';
+#ifdef __wasm__
+	(void)start_cwd;
+	(void)cap;
+#else
 	char cur[PATH_MAX];
 	if (!stl_realpath(start_cwd, cur)) {
 		snprintf(cur, sizeof(cur), "%s", start_cwd);
@@ -142,6 +156,7 @@ static void discover_repo_root(const char *start_cwd, char *root_out, size_t cap
 		if (!slash || slash == cur) break;
 		*slash = '\0';
 	}
+#endif
 }
 
 static bool dir_has_any_axis_plugin(const char *dir) {
@@ -170,6 +185,11 @@ static void append_resolved_axis_dir(char *axis_path, size_t cap, const char *di
 }
 
 static void discover_corm_and_axes(mm_ctx_t *ctx, const mm_options_t *opts) {
+#ifdef __wasm__
+	(void)ctx;
+	(void)opts;
+	return;
+#else
 	const char *env_corm = (opts && opts->corm_bin) ? opts->corm_bin : getenv("MM_CORM_BIN");
 	if (env_corm && *env_corm && file_exists(env_corm)) {
 		char rp[PATH_MAX];
@@ -271,6 +291,7 @@ static void discover_corm_and_axes(mm_ctx_t *ctx, const mm_options_t *opts) {
 			append_resolved_axis_dir(ctx->axis_path, sizeof(ctx->axis_path), sys_libs[i]);
 		}
 	}
+#endif
 }
 
 static void inmem_tier_load(mm_inmem_tier_t *st, const char *tdir);
@@ -284,12 +305,24 @@ mm_ctx_t *mm_open(const mm_options_t *opts) {
 			snprintf(ctx->cwd, sizeof(ctx->cwd), "%s", opts->cwd);
 		}
 	} else {
+#ifdef __wasm__
+		strcpy(ctx->cwd, ".");
+#else
 		if (!getcwd(ctx->cwd, sizeof(ctx->cwd))) {
 			strcpy(ctx->cwd, ".");
 		}
+#endif
 	}
 
 	/* 1. Tier 1: Global Directory */
+#ifdef __wasm__
+	const char *gdir = (opts && opts->global_dir) ? opts->global_dir : NULL;
+	if (gdir && *gdir) {
+		snprintf(ctx->global_dir, sizeof(ctx->global_dir), "%s", gdir);
+	} else {
+		snprintf(ctx->global_dir, sizeof(ctx->global_dir), "/tmp/mm-wasm-global");
+	}
+#else
 	const char *gdir = (opts && opts->global_dir) ? opts->global_dir : getenv("MM_GLOBAL_DIR");
 	if (gdir && *gdir) {
 		snprintf(ctx->global_dir, sizeof(ctx->global_dir), "%s", gdir);
@@ -304,6 +337,7 @@ mm_ctx_t *mm_open(const mm_options_t *opts) {
 			snprintf(ctx->global_dir, sizeof(ctx->global_dir), "/tmp/mm-global");
 		}
 	}
+#endif
 	mkdir_p(ctx->global_dir);
 	char gsess[PATH_MAX];
 	snprintf(gsess, sizeof(gsess), "%s/sessions", ctx->global_dir);
@@ -311,7 +345,11 @@ mm_ctx_t *mm_open(const mm_options_t *opts) {
 
 	/* 2. Tier 2: Project Directory */
 	discover_repo_root(ctx->cwd, ctx->project_root, sizeof(ctx->project_root));
+#ifdef __wasm__
+	const char *pdir = (opts && opts->project_dir) ? opts->project_dir : NULL;
+#else
 	const char *pdir = (opts && opts->project_dir) ? opts->project_dir : getenv("MM_PROJECT_DIR");
+#endif
 	if (pdir && *pdir) {
 		snprintf(ctx->project_dir, sizeof(ctx->project_dir), "%s", pdir);
 		ctx->has_project = true;
@@ -337,11 +375,19 @@ mm_ctx_t *mm_open(const mm_options_t *opts) {
 
 	discover_corm_and_axes(ctx, opts);
 
+#ifdef __wasm__
+	const char *auren = (opts && opts->auren_url) ? opts->auren_url : NULL;
+#else
 	const char *auren = (opts && opts->auren_url) ? opts->auren_url : getenv("CORM_SEPAL_EMBED_URL");
+#endif
 	snprintf(ctx->auren_url, sizeof(ctx->auren_url), "%s",
 	         (auren && *auren) ? auren : "http://127.0.0.1:8081/v1/embeddings");
 
+#ifdef __wasm__
+	const char *model = (opts && opts->embed_model) ? opts->embed_model : NULL;
+#else
 	const char *model = (opts && opts->embed_model) ? opts->embed_model : getenv("CORM_SEPAL_EMBED_MODEL");
+#endif
 	snprintf(ctx->embed_model, sizeof(ctx->embed_model), "%s",
 	         (model && *model) ? model : "all-minilm");
 
@@ -447,6 +493,10 @@ static char *mm_build_envelope_folded_text(const mm_envelope_t *env) {
 }
 
 static void inmem_tier_sync_stat(mm_inmem_tier_t *st, const char *tdir) {
+#ifdef __wasm__
+	(void)st;
+	(void)tdir;
+#else
 	if (!st || !tdir) return;
 	char db_file[PATH_MAX];
 	snprintf(db_file, sizeof(db_file), "%s/mem.db", tdir);
@@ -455,6 +505,7 @@ static void inmem_tier_sync_stat(mm_inmem_tier_t *st, const char *tdir) {
 		st->loaded_mtime = sb.st_mtime;
 		st->loaded_size  = sb.st_size;
 	}
+#endif
 }
 
 static bool inmem_tier_is_fresh(const mm_inmem_tier_t *st, const char *tdir) {
@@ -1018,6 +1069,10 @@ uint32_t mm_next_ref(mm_ctx_t *ctx, mm_tier_t tier) {
 		free(refs);
 	}
 
+#ifdef __wasm__
+	uint32_t next = max_ref + 1;
+	if (st) st->next_ref = next;
+#else
 	char seq_path[PATH_MAX];
 	snprintf(seq_path, sizeof(seq_path), "%s/.next_ref", tdir);
 	FILE *fp = fopen(seq_path, "r");
@@ -1036,6 +1091,7 @@ uint32_t mm_next_ref(mm_ctx_t *ctx, mm_tier_t tier) {
 		fprintf(fp, "%u\n", next);
 		fclose(fp);
 	}
+#endif
 	return next;
 }
 
@@ -1339,6 +1395,10 @@ int mm_observe_verification_command(mm_ctx_t *ctx, const char *command,
 }
 
 int mm_sync_standing_directives(mm_ctx_t *ctx) {
+#ifdef __wasm__
+	(void)ctx;
+	return 0;
+#else
 	if (!ctx) return -1;
 	const char *gdir = mm_get_tier_dir(ctx, MM_TIER_GLOBAL);
 	if (!gdir) return -1;
@@ -1377,6 +1437,7 @@ int mm_sync_standing_directives(mm_ctx_t *ctx) {
 	fclose(fp);
 	free(refs);
 	return 0;
+#endif
 }
 
 int mm_synthesize_reinforcement(mm_ctx_t *ctx, const char *reason,

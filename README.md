@@ -1,14 +1,18 @@
+<p align="center">
+  <img src="assets/logo.png" alt="libmm logo" width="220" />
+</p>
+
 # libmm
 
 [![npm](https://img.shields.io/badge/npm-@tty--pt/mm-CB3837?logo=npm)](npm/README.md)
 [![C99](https://img.shields.io/badge/C-C99-555?logo=c)](#)
-[![License: BSD-2-Clause](https://img.shields.io/badge/License-BSD--2--Clause-blue.svg)](LICENSE)
+[![BSD-2-Clause](https://img.shields.io/badge/License-BSD--2--Clause-blue)](#)
 [![Two-Tier Memory](https://img.shields.io/badge/memory-2--tier%20federated-16A34A)](#)
 [![MCP Server](https://img.shields.io/badge/MCP-JSON--RPC%202.0%20stdio-blueviolet)](#)
 
 > Pure-C two-tier multi-axis memory engine, codebase symbol & call-graph indexer, and universal CLI/MCP substrate built on [`libcorm`](https://github.com/tty-pt/libcorm), [`liblemma`](https://github.com/tty-pt/liblemma), [`libsepal`](https://github.com/tty-pt/libsepal), [`libjoint`](https://github.com/tty-pt/libjoint), [`libislet`](https://github.com/tty-pt/libislet), and [`libstele`](https://github.com/tty-pt/libstele). Canonical header is `<ttypt/mm.h>` and pkg-config package `mm.pc`.
 
-`libmm` provides the cognitive, epistemic, and codebase-indexing engine behind `pi-mm` as a standalone C library (`libmm.so` / `libmm.a`), universal native CLI (`mm`), zero-JS Model Context Protocol server (`mm mcp`), and colocated Node.js/Deno N-API addon (`@tty-pt/mm`).
+`libmm` provides the cognitive, epistemic, and codebase-indexing engine behind `pi-mm` as a standalone C library (`libmm.so`), universal native CLI (`mm`), zero-JS Model Context Protocol server (`mm mcp`), and universal Node.js/Browser package (`@tty-pt/mm`).
 
 ---
 
@@ -64,13 +68,13 @@ int main(void) {
 ```
 
 Compile and link:
-```bash
+```sh
 cc app.c $(pkg-config --cflags --libs mm) -o app
 ```
 
 ### Universal `mm` CLI & Zero-JS MCP Server
 
-```bash
+```sh
 # Record a standing global rule (routes automatically to Tier 1 Global)
 mm record --standing --anchor --problem "Never poll status in a loop; await reactive notifications"
 
@@ -118,7 +122,7 @@ mm mcp
 | **Context Lifecycle** | `mm_open()`, `mm_close()`, `mm_get_tier_dir()`, `mm_get_project_root()`, `mm_get_project_name()`, `mm_has_project_tier()`, `mm_next_ref()` |
 | **Envelope & HTOK v4 Codec** | `mm_envelope_init()`, `mm_envelope_free()`, `mm_envelope_clone()`, `mm_envelope_to_json()`, `mm_envelope_from_json()`, `mm_payload_encode()`, `mm_payload_decode()`, `mm_window_for_level()` |
 | **RRF & Epistemic Ranking** | `mm_adaptive_rrf_k()`, `mm_fuse_rankings_rrf()`, `mm_compute_ranking_score()`, `mm_filter_and_enrich()`, `mm_is_technical_inquiry()`, `mm_is_code_or_doc_artifact()`, `mm_is_question_memory()`, `mm_is_assistant_echo()`, `mm_is_clean_summary_text()` |
-| **Record, Recall & Review** | `mm_record()`, `mm_recall()`, `mm_review()`, `mm_review_ex()`, `mm_get_envelope()`, `mm_put_envelope()`, `mm_forget()`, `mm_list_refs()`, `mm_traverse()`, `mm_build_memory_overview()` |
+| **Record, Recall & Review** | `mm_record()`, `mm_recall()`, `mm_recall_candidates()`, `mm_review()`, `mm_review_ex()`, `mm_get_envelope()`, `mm_put_envelope()`, `mm_forget()`, `mm_list_refs()`, `mm_traverse()`, `mm_build_memory_overview()` |
 | **Truth Maintenance & Guardrails** | `mm_validate_lifecycle_transition()`, `mm_propagate_truth_maintenance()`, `mm_evaluate_guardrail()`, `mm_observe_verification_command()`, `mm_record_file_mutation()`, `mm_consolidate_scopes_and_principles()` |
 | **Codebase AST & Call Graph** | `mm_code_index_init()`, `mm_code_scan_source()`, `mm_code_index_dir()`, `mm_code_resolve_call_graph()`, `mm_code_search()`, `mm_code_read_symbol()`, `mm_code_read_symbols_ex()`, `mm_code_trace()`, `mm_code_overview()`, `mm_code_diff_impact()`, `mm_code_diagnose()`, `mm_code_detect_xy_mismatches()`, `mm_code_resolve_cross_boundary_pairs()`, `mm_code_first_touch_dossier()` |
 | **Session & MCP Server** | `mm_session_ingest_turn()`, `mm_session_ingest_event()`, `mm_session_recall_ex()`, `mm_session_compact()`, `mm_classify_prompt()`, `mm_prime()`, `mm_consolidate_drain()`, `mm_mcp_serve_stdio()` |
@@ -127,31 +131,30 @@ mm mcp
 
 ## 4. Installation & Build
 
-### Prebuilt OS Packages (`tty.pt`)
-Prebuilt native packages (`libmm`) for all 7 supported OS package managers — Linux (`apt`, `apk`, `dnf`, `pacman`), macOS (`brew`), Windows (`winget`), and OpenBSD (`pkg_add`) — are distributed via [**tty.pt packages**](https://github.com/tty-pt/ci/blob/main/docs/install.md).
+### Prebuilt Packages
+Prebuilt packages for Linux (APT / Alpine / Arch / Fedora-RHEL), macOS (Homebrew), Windows (winget / MSYS2), and OpenBSD are distributed via [**tty.pt packages**](https://github.com/tty-pt/ci/blob/main/docs/install.md). Use **libmm** as the package name.
 
 ### Build from Source
-```bash
-make              # builds lib/libmm.so, lib/libmm.a, and bin/mm
-make test         # runs all C unit suites (envelope, fusion, ctx, code, session/CLI/MCP)
-make npm-build    # builds Node-API addon (npm/dist/mm_node.node)
-make npm-test     # runs Node.js N-API integration test suite
-sudo make install # installs headers, libraries, mm binary, and mm.pc
+```sh
+make                  # builds lib/libmm.so and bin/mm
+make test             # runs all C unit suites (payload, fusion, code, session/CLI/MCP)
+make docs             # generates Doxygen manpages (man/mm.h.3)
+make wasm             # builds npm/dist/mm.wasm via centralized toolchain
+make npm-build        # builds Node-API addon (npm/dist/mm_node.node)
+make npm-test         # runs Node.js N-API and WASM test suite
+make PREFIX="$HOME/.local" install
 ```
 
 ---
 
-## 5. Node.js & Deno Bindings (`@tty-pt/mm`)
+## 5. JavaScript & WebAssembly Bindings (`@tty-pt/mm`)
 
-`@tty-pt/mm` ships prebuilt Node-API (`mm.node`) binaries across all 6 target platforms (`linux-x64`, `linux-arm64`, `linux-x64-musl`, `darwin-arm64`, `darwin-x64`, `win32-x64`):
+Official Node.js and Browser WebAssembly bindings are colocated in [`npm/`](npm/README.md):
+- **Universal Runtime**: Native Node-API prebuilds across 6 target platforms (`linux-x64`, `linux-arm64`, `linux-x64-musl`, `darwin-arm64`, `darwin-x64`, `win32-x64`) with seamless fallback to the precompiled WebAssembly reactor (`dist/mm.wasm`) on `@tty-pt/stele`.
+- **Two-Tier Memory & Codebase Intelligence**: `MmContext`, `MmCodeIndex`, HTOK v4 binary codecs, hybrid RRF ranking, and structural multi-language symbol scanning.
+- **C Development Headers**: Install via `npm install @tty-pt/mm` and consume canonical headers from `node_modules/@tty-pt/mm/include`.
 
-```bash
-npm install @tty-pt/mm
-```
-
-See [npm/README.md](npm/README.md) for the complete JavaScript/TypeScript API reference (`MmContext`, `MmCodeIndex`, `fuseRankingsRRF`, `computeRankingScore`, `payloadEncode`, `payloadDecode`, `scanSource`).
-
----
+👉 *For complete TypeScript usage, browser WASM guides, and API reference, see [npm/README.md](npm/README.md).*
 
 ## License
 

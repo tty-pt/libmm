@@ -1,6 +1,28 @@
 # Changelog
 
-All notable changes to `libmm` (`@tty-pt/mm`) will be documented in this file.
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### Added
+- **WebAssembly Reactor (`npm/wasm/mm_wasm.c`, `npm/dist/mm.wasm`)**:
+  - Added standalone `mm.wasm` reactor build (`WASM_GLOBAL_BASE=131072` in `external/mk/include.mk`) exporting `mm_wasm_record`, `mm_wasm_recall_json`, and `mm_wasm_review` on `@tty-pt/stele`'s shared linear memory substrate.
+- **In-Memory Tier Store & Structured Candidate Recall (`include/ttypt/mm.h`, `src/mm_ctx.c`, `src/mm_fusion.c`)**:
+  - Added `mm_recall_candidates()`, optional `mm_recall_req_t.subsystem` filtering, and an in-process/WASM envelope store with accent-folded fallback search.
+- **Doxygen Manpage Generation & Brand Assets (`Doxyfile`, `assets/logo.png`, `npm/assets/logo.png`)**:
+  - Added `Doxyfile` for `mm.h.3` manpage generation via `make docs` / `make install`, cleaned Doxygen tag warnings in `include/ttypt/mm.h`, and added `libmm` brand assets.
+
+### Changed
+- **Browser-Safe ESM & Dual-Engine Runtime (`npm/dist/index.js`, `npm/dist/index.d.ts`, `npm/native/mm_napi.c`, `npm/package.json`)**:
+  - Removed top-level `node:*` imports for browser/edge compatibility, added `getMmWasm()`, `wasmRecord()`, `wasmRecallJson()`, `wasmReview()`, and `MmContext` WASM fallback when native N-API is unavailable.
+  - Added `summary` fallback alongside `problem` in `NapiRecord` (`npm/native/mm_napi.c`) and aligned TypeScript definitions (`MmRecordRequest`, `MmCodeIndex.readSymbols`).
+  - Added `build:wasm` and `build` scripts and standardized `@tty-pt/corm` and `@tty-pt/stele` `peerDependencies` with zero runtime `dependencies`.
+- **CI Multi-Environment Publishing & Documentation (`.github/workflows/ci.yml`, `README.md`, `npm/README.md`)**:
+  - Added `pull_request` and `workflow_dispatch` CI triggers with tag-gated publishing across all supported environments (`deb`, `apk`, `rpm`, `pacman`, `brew`, `openbsd`, `winget`, and `npm`).
+  - Aligned `CHANGELOG.md`, `README.md`, and `npm/README.md` with ecosystem formatting, badges, dual-engine runtime documentation, and package-manager installation conventions.
 
 ## [1.0.0] - 2026-11-17
 

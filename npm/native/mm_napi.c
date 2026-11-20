@@ -829,6 +829,10 @@ static napi_value NapiRecord(napi_env env, napi_callback_info info) {
 	get_prop_str(env, ro, "leafId", lid_s, sizeof(lid_s));
 
 	char *prob = get_prop_str_heap(env, ro, "problem");
+	if (!prob || !prob[0]) {
+		free(prob);
+		prob = get_prop_str_heap(env, ro, "summary");
+	}
 	char *req_s = get_prop_str_heap(env, ro, "request");
 	char *out_s = get_prop_str_heap(env, ro, "outcome");
 

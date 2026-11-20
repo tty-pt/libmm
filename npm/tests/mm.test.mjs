@@ -5,6 +5,10 @@ import os from "node:os";
 import path from "node:path";
 import {
   isNativeAvailable,
+  getMmWasm,
+  wasmRecord,
+  wasmRecallJson,
+  wasmReview,
   adaptiveRrfK,
   isTechnicalInquiry,
   isCleanSummaryText,
@@ -157,4 +161,26 @@ test("@tty-pt/mm MmContext two-tier record, recall, review & MmCodeIndex", () =>
   assert.ok(traceOut.includes("compute_flux"));
 
   fs.rmSync(tmpDir, { recursive: true, force: true });
+});
+
+test("@tty-pt/mm WebAssembly reactor (mm.wasm) record, recallJson & review", () => {
+  const wasm = getMmWasm();
+  assert.ok(wasm && wasm.exports, "mm.wasm should instantiate on Stele substrate");
+  assert.equal(typeof wasm.exports.mm_wasm_record, "function");
+  assert.equal(typeof wasm.exports.mm_wasm_recall_json, "function");
+  assert.equal(typeof wasm.exports.mm_wasm_review, "function");
+
+  const ref = wasmRecord(
+    "WASM reactor stores federated memory without native addon",
+    "Verified in-memory record/recall",
+    "wasm-test",
+    true,
+  );
+  assert.ok(ref >= 1);
+
+  const json = wasmRecallJson("federated memory", "wasm-test", 5);
+  assert.ok(json.includes("WASM reactor stores federated memory"));
+
+  const rc = wasmReview(ref, "confirm", "Verified via node --test");
+  assert.equal(rc, 0);
 });

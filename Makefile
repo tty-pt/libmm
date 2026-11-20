@@ -8,6 +8,7 @@ LDLIBS-mm := -L./lib -L../libcorm/lib -L../libstele/lib -lmm -lcorm -lstele -lm
 CFLAGS-BIN-Windows :=
 
 WASM_SRCS := npm/wasm/mm_wasm.c
+WASM_EXPORTS := mm_wasm_record mm_wasm_recall_json mm_wasm_review
 WASM_EXTRA_CFLAGS := -Iinclude -I../libcorm/include -I../libstele/include
 
 include ../mk/include.mk

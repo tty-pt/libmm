@@ -1,0 +1,3 @@
+PROJECT_NAME           = "mm"
+@INCLUDE = ../mk/Doxyfile
+EXCLUDE                = src/mm.c src/mm_mcp.c src/mm_code.c src/mm_session.c
