@@ -22,7 +22,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "build:native": "mkdir -p build/Release dist && gcc -O3 -fPIC -shared -I/usr/include/node -I../include -I../../libcorm/include -I../../libstele/include native/mm_napi.c -L../lib -L../../libcorm/lib -L../../libstele/lib -Wl,-rpath,'$ORIGIN:$ORIGIN/../../stele/prebuilds/linux-x64:$ORIGIN/../../../stele/prebuilds/linux-x64:$ORIGIN/../../../lib:$ORIGIN/../../lib:$ORIGIN/../../../../libstele/lib:$ORIGIN/../../../libstele/lib:../lib:../../libstele/lib' -lmm -lcorm -lstele -lm -o build/Release/mm_node.node && cp build/Release/mm_node.node dist/mm_node.node && cp build/Release/mm_node.node dist/mm.node && (test -d prebuilds/linux-x64 && cp build/Release/mm_node.node prebuilds/linux-x64/mm.node || true)",
+    "build:native": "mkdir -p build/Release dist && gcc -O3 -fPIC -shared -I/usr/include/node -I../include -I../../libcorm/include -I../../libstele/include native/mm_napi.c -L../lib -L../../libcorm/lib -L../../libstele/lib -Wl,-rpath,'$ORIGIN:$ORIGIN/../../stele/prebuilds/linux-x64:$ORIGIN/../../../stele/prebuilds/linux-x64:$ORIGIN/../../../lib:$ORIGIN/../../lib:$ORIGIN/../../../../libstele/lib:$ORIGIN/../../../libstele/lib:../lib:../../libstele/lib' -lmm -lcorm -lstele -lm -o build/Release/mm_node.node && cp -f --remove-destination build/Release/mm_node.node dist/mm_node.node && cp -f --remove-destination build/Release/mm_node.node dist/mm.node && (test -d prebuilds/linux-x64 && cp -f --remove-destination build/Release/mm_node.node prebuilds/linux-x64/mm.node || true)",
     "build:wasm": "make -C .. wasm",
     "build": "npm run build:native && npm run build:wasm",
     "test": "node --test tests/mm.test.mjs"

@@ -8,6 +8,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 #include <string.h>
 #include <ctype.h>
 #include <time.h>
@@ -29,6 +30,31 @@
 #define strtok_r strtok_s
 #endif
 #endif
+
+static void mm_buf_appendf(char **buf, size_t *pos, size_t *cap, const char *fmt, ...) {
+	if (!buf || !*buf || !pos || !cap) return;
+	for (;;) {
+		size_t avail = (*cap > *pos) ? (*cap - *pos) : 0;
+		va_list ap;
+		va_start(ap, fmt);
+		int n = vsnprintf(*buf + *pos, avail, fmt, ap);
+		va_end(ap);
+		if (n < 0) return;
+		if ((size_t)n < avail) {
+			*pos += (size_t)n;
+			return;
+		}
+		size_t new_cap = *cap ? *cap * 2 : 4096;
+		while (new_cap <= *pos + (size_t)n + 1) new_cap *= 2;
+		char *nb = (char *)realloc(*buf, new_cap);
+		if (!nb) {
+			if (avail > 0) *pos = *cap - 1;
+			return;
+		}
+		*buf = nb;
+		*cap = new_cap;
+	}
+}
 
 /* ============================================================================
  * 1. Internal Context Structure & Filesystem Helpers
@@ -477,15 +503,15 @@ static char *mm_build_envelope_folded_text(const mm_envelope_t *env) {
 	char *raw = (char *)malloc(cap);
 	if (!raw) return strdup("");
 	size_t pos = 0;
-	pos += (size_t)snprintf(raw + pos, cap - pos, "%s %s %s %s %s %s ",
+	mm_buf_appendf(&raw, &pos, &cap, "%s %s %s %s %s %s ",
 		env->summary ? env->summary : "",
 		env->ep_problem ? env->ep_problem : "",
 		env->ep_request ? env->ep_request : "",
 		env->ep_outcome ? env->ep_outcome : "",
 		env->ctx_subsystem,
 		env->ctx_module);
-	for (size_t i = 0; i < env->n_tags && pos + 64 < cap; i++) {
-		pos += (size_t)snprintf(raw + pos, cap - pos, "%s ", env->tags[i] ? env->tags[i] : "");
+	for (size_t i = 0; i < env->n_tags; i++) {
+		mm_buf_appendf(&raw, &pos, &cap, "%s ", env->tags[i] ? env->tags[i] : "");
 	}
 	char *folded = mm_fold_search_text(raw);
 	free(raw);
@@ -1456,12 +1482,13 @@ int mm_synthesize_reinforcement(mm_ctx_t *ctx, const char *reason,
 	if (reason && !strcmp(reason, "compaction")) label = "POST-COMPACTION";
 	else if (reason && !strcmp(reason, "milestone")) label = "MILESTONE CHECKPOINT";
 
-	size_t pos = (size_t)snprintf(buf, cap,
+	size_t pos = 0;
+	mm_buf_appendf(&buf, &pos, &cap,
 		"[STANDING DIRECTIVES REINFORCEMENT — %s]\n", label);
 	if (milestone_summary && *milestone_summary) {
-		pos += (size_t)snprintf(buf + pos, cap - pos, "Milestone: %s\n", milestone_summary);
+		mm_buf_appendf(&buf, &pos, &cap, "Milestone: %s\n", milestone_summary);
 	}
-	pos += (size_t)snprintf(buf + pos, cap - pos,
+	mm_buf_appendf(&buf, &pos, &cap,
 		"The following operator standing directives and invariants remain in force:\n");
 
 	size_t active_count = 0;
@@ -1471,11 +1498,11 @@ int mm_synthesize_reinforcement(mm_ctx_t *ctx, const char *reason,
 			if (env.standing && env.lifecycle != MM_STATUS_CONTRADICTED &&
 			    env.lifecycle != MM_STATUS_SUPERSEDED && env.summary && env.summary[0]) {
 				active_count++;
-				pos += (size_t)snprintf(buf + pos, cap - pos,
+				mm_buf_appendf(&buf, &pos, &cap,
 					"  • [Ref G:%u] (%s, %s) %s\n",
 					refs[i], mm_level_to_str(env.level), mm_status_to_str(env.lifecycle), env.summary);
 				for (size_t c = 0; c < env.n_constraints; c++) {
-					pos += (size_t)snprintf(buf + pos, cap - pos,
+					mm_buf_appendf(&buf, &pos, &cap,
 						"      Constraint: %s\n", env.constraints[c]);
 				}
 			}
@@ -1485,7 +1512,7 @@ int mm_synthesize_reinforcement(mm_ctx_t *ctx, const char *reason,
 	free(refs);
 
 	if (active_count == 0) {
-		pos += (size_t)snprintf(buf + pos, cap - pos, "  (none active)\n");
+		mm_buf_appendf(&buf, &pos, &cap, "  (none active)\n");
 	}
 	*out_buf = buf;
 	if (out_len) *out_len = pos;
@@ -1779,32 +1806,27 @@ static void traverse_recursive(mm_ctx_t *ctx, mm_tier_t tier, uint32_t cur_ref,
                                const uint32_t *all_refs, size_t n_all_refs,
                                uint32_t *visited, size_t *n_visited,
                                char **buf, size_t *pos, size_t *cap) {
-	if (*pos + 1024 >= *cap) {
-		*cap *= 2;
-		*buf = (char *)realloc(*buf, *cap);
-	}
-
 	for (int d = 0; d < depth; d++) {
-		*pos += (size_t)snprintf(*buf + *pos, *cap - *pos, "  ");
+		mm_buf_appendf(buf, pos, cap, "  ");
 	}
 	if (depth > 0) {
-		*pos += (size_t)snprintf(*buf + *pos, *cap - *pos, "%s ", go_up ? "↑" : "└─");
+		mm_buf_appendf(buf, pos, cap, "%s ", go_up ? "↑" : "└─");
 	}
 
 	for (size_t v = 0; v < *n_visited; v++) {
 		if (visited[v] == cur_ref) {
-			*pos += (size_t)snprintf(*buf + *pos, *cap - *pos, "[Ref #%u] [CYCLE DETECTED]\n", cur_ref);
+			mm_buf_appendf(buf, pos, cap, "[Ref #%u] [CYCLE DETECTED]\n", cur_ref);
 			return;
 		}
 	}
 
 	mm_envelope_t env;
 	if (mm_get_envelope(ctx, tier, cur_ref, &env) != 0) {
-		*pos += (size_t)snprintf(*buf + *pos, *cap - *pos, "[Ref #%u] [MISSING RECORD]\n", cur_ref);
+		mm_buf_appendf(buf, pos, cap, "[Ref #%u] [MISSING RECORD]\n", cur_ref);
 		return;
 	}
 
-	*pos += (size_t)snprintf(*buf + *pos, *cap - *pos,
+	mm_buf_appendf(buf, pos, cap,
 		"[Ref #%u] (%s, %s, %s): %s\n",
 		cur_ref,
 		mm_level_to_str(env.level),
@@ -1881,7 +1903,7 @@ int mm_traverse(mm_ctx_t *ctx, mm_tier_t tier, uint32_t start_ref,
 	size_t pos = 0;
 
 	bool go_up = direction && (!strcmp(direction, "up") || !strcmp(direction, "inbound"));
-	pos += (size_t)snprintf(buf + pos, cap - pos,
+	mm_buf_appendf(&buf, &pos, &cap,
 		"=== Evidence Tree (%s, depth=%d) ===\n",
 		go_up ? "Upward / Dependent Conclusions" : "Downward / Supporting Evidence",
 		max_depth);
@@ -2002,18 +2024,20 @@ int mm_review_ex(mm_ctx_t *ctx, const mm_review_req_t *req, char **out_buf, size
 	}
 
 	if (out_buf) {
-		char *msg = (char *)malloc(2048);
-		size_t pos = (size_t)snprintf(msg, 2048,
+		size_t cap = 2048;
+		char *msg = (char *)malloc(cap);
+		size_t pos = 0;
+		mm_buf_appendf(&msg, &pos, &cap,
 			"Updated [Ref %s:%u] lifecycle %s -> %s (action: %s)\n",
 			tier == MM_TIER_GLOBAL ? "G" : "P", req->ref,
 			mm_status_to_str(old_lc), mm_status_to_str(new_lc), req->action);
 		if (n_down > 0) {
-			pos += (size_t)snprintf(msg + pos, 2048 - pos,
+			mm_buf_appendf(&msg, &pos, &cap,
 				"Truth Maintenance Cascade downgraded %zu dependent record(s) to hypothesized:", n_down);
 			for (size_t i = 0; i < n_down; i++) {
-				pos += (size_t)snprintf(msg + pos, 2048 - pos, " #%u", downgraded[i]);
+				mm_buf_appendf(&msg, &pos, &cap, " #%u", downgraded[i]);
 			}
-			pos += (size_t)snprintf(msg + pos, 2048 - pos, "\n");
+			mm_buf_appendf(&msg, &pos, &cap, "\n");
 		}
 		*out_buf = msg;
 		if (out_len) *out_len = pos;
@@ -2104,7 +2128,14 @@ int mm_build_memory_overview(mm_ctx_t *ctx, mm_tier_t tier, int max_per_bucket,
 
 	size_t cap = 8192 + n_recs * 256;
 	char *buf = (char *)malloc(cap);
-	size_t pos = (size_t)snprintf(buf, cap,
+	if (!buf) {
+		for (size_t i = 0; i < n_recs; i++) mm_envelope_free(&recs[i].env);
+		free(recs);
+		return -1;
+	}
+	buf[0] = '\0';
+	size_t pos = 0;
+	mm_buf_appendf(&buf, &pos, &cap,
 		"=== Persistent Memory Hierarchical Overview ===\n"
 		"Total Active Records: %zu | Span: %s .. %s\n"
 		"Levels: L3=%zu | L2=%zu | L1=%zu | L0=%zu\n\n",
@@ -2115,74 +2146,74 @@ int mm_build_memory_overview(mm_ctx_t *ctx, mm_tier_t tier, int max_per_bucket,
 		lvl_counts[MM_LEVEL_L1], lvl_counts[MM_LEVEL_L0]);
 
 	/* Bucket 1: Persona Tenets */
-	pos += (size_t)snprintf(buf + pos, cap - pos, "=== Persona Tenets ===\n");
+	mm_buf_appendf(&buf, &pos, &cap, "=== Persona Tenets ===\n");
 	int b_cnt = 0;
 	for (size_t i = 0; i < n_recs && b_cnt < max_per_bucket; i++) {
 		const mm_envelope_t *e = &recs[i].env;
 		if (e->lifecycle == MM_STATUS_CONTRADICTED) continue;
 		if (!strcmp(e->type, "persona") || has_tag_ci(e, "persona-tenet")) {
-			pos += (size_t)snprintf(buf + pos, cap - pos, "  • [Ref %s:%u] (%s) %s\n",
-			                        recs[i].tier == MM_TIER_GLOBAL ? "G" : "P",
-			                        recs[i].ref, mm_level_to_str(e->level), e->summary ? e->summary : "");
+			mm_buf_appendf(&buf, &pos, &cap, "  • [Ref %s:%u] (%s) %s\n",
+			               recs[i].tier == MM_TIER_GLOBAL ? "G" : "P",
+			               recs[i].ref, mm_level_to_str(e->level), e->summary ? e->summary : "");
 			b_cnt++;
 		}
 	}
-	if (b_cnt == 0) pos += (size_t)snprintf(buf + pos, cap - pos, "  (none)\n");
+	if (b_cnt == 0) mm_buf_appendf(&buf, &pos, &cap, "  (none)\n");
 
 	/* Bucket 2: Core Principles & Standing Directives (L3 / Standing) */
-	pos += (size_t)snprintf(buf + pos, cap - pos, "\n=== Core Principles (L3 & Standing) ===\n");
+	mm_buf_appendf(&buf, &pos, &cap, "\n=== Core Principles (L3 & Standing) ===\n");
 	b_cnt = 0;
 	for (size_t i = 0; i < n_recs && b_cnt < max_per_bucket; i++) {
 		const mm_envelope_t *e = &recs[i].env;
 		if (e->lifecycle == MM_STATUS_CONTRADICTED) continue;
 		if (!strcmp(e->type, "persona") || has_tag_ci(e, "persona-tenet")) continue;
 		if (e->level == MM_LEVEL_L3 || e->standing) {
-			pos += (size_t)snprintf(buf + pos, cap - pos, "  • [Ref %s:%u] (%s, %s%s) %s\n",
-			                        recs[i].tier == MM_TIER_GLOBAL ? "G" : "P",
-			                        recs[i].ref, mm_level_to_str(e->level),
-			                        mm_status_to_str(e->lifecycle),
-			                        e->standing ? ", standing" : "",
-			                        e->summary ? e->summary : "");
+			mm_buf_appendf(&buf, &pos, &cap, "  • [Ref %s:%u] (%s, %s%s) %s\n",
+			               recs[i].tier == MM_TIER_GLOBAL ? "G" : "P",
+			               recs[i].ref, mm_level_to_str(e->level),
+			               mm_status_to_str(e->lifecycle),
+			               e->standing ? ", standing" : "",
+			               e->summary ? e->summary : "");
 			b_cnt++;
 		}
 	}
-	if (b_cnt == 0) pos += (size_t)snprintf(buf + pos, cap - pos, "  (none)\n");
+	if (b_cnt == 0) mm_buf_appendf(&buf, &pos, &cap, "  (none)\n");
 
 	/* Bucket 3: Active Invariants & Decisions (L2) */
-	pos += (size_t)snprintf(buf + pos, cap - pos, "\n=== Active Invariants & Decisions (L2) ===\n");
+	mm_buf_appendf(&buf, &pos, &cap, "\n=== Active Invariants & Decisions (L2) ===\n");
 	b_cnt = 0;
 	for (size_t i = 0; i < n_recs && b_cnt < max_per_bucket; i++) {
 		const mm_envelope_t *e = &recs[i].env;
 		if (e->lifecycle == MM_STATUS_CONTRADICTED) continue;
 		if (!strcmp(e->type, "persona") || has_tag_ci(e, "persona-tenet")) continue;
 		if (e->level == MM_LEVEL_L2 && !e->standing) {
-			pos += (size_t)snprintf(buf + pos, cap - pos, "  • [Ref %s:%u] (%s) %s\n",
-			                        recs[i].tier == MM_TIER_GLOBAL ? "G" : "P",
-			                        recs[i].ref, mm_status_to_str(e->lifecycle),
-			                        e->summary ? e->summary : "");
+			mm_buf_appendf(&buf, &pos, &cap, "  • [Ref %s:%u] (%s) %s\n",
+			               recs[i].tier == MM_TIER_GLOBAL ? "G" : "P",
+			               recs[i].ref, mm_status_to_str(e->lifecycle),
+			               e->summary ? e->summary : "");
 			b_cnt++;
 		}
 	}
-	if (b_cnt == 0) pos += (size_t)snprintf(buf + pos, cap - pos, "  (none)\n");
+	if (b_cnt == 0) mm_buf_appendf(&buf, &pos, &cap, "  (none)\n");
 
 	/* Bucket 4: Recent Milestones (L1) */
-	pos += (size_t)snprintf(buf + pos, cap - pos, "\n=== Recent Milestones (L1) ===\n");
+	mm_buf_appendf(&buf, &pos, &cap, "\n=== Recent Milestones (L1) ===\n");
 	b_cnt = 0;
 	for (size_t i = 0; i < n_recs && b_cnt < max_per_bucket; i++) {
 		const mm_envelope_t *e = &recs[i].env;
 		if (e->lifecycle == MM_STATUS_CONTRADICTED) continue;
 		if (e->level == MM_LEVEL_L1) {
-			pos += (size_t)snprintf(buf + pos, cap - pos, "  • [Ref %s:%u] (%s) %s\n",
-			                        recs[i].tier == MM_TIER_GLOBAL ? "G" : "P",
-			                        recs[i].ref, mm_status_to_str(e->lifecycle),
-			                        e->summary ? e->summary : "");
+			mm_buf_appendf(&buf, &pos, &cap, "  • [Ref %s:%u] (%s) %s\n",
+			               recs[i].tier == MM_TIER_GLOBAL ? "G" : "P",
+			               recs[i].ref, mm_status_to_str(e->lifecycle),
+			               e->summary ? e->summary : "");
 			b_cnt++;
 		}
 	}
-	if (b_cnt == 0) pos += (size_t)snprintf(buf + pos, cap - pos, "  (none)\n");
+	if (b_cnt == 0) mm_buf_appendf(&buf, &pos, &cap, "  (none)\n");
 
 	/* Bucket 5: Chronological Epoch Timeline (YYYY-MM) */
-	pos += (size_t)snprintf(buf + pos, cap - pos, "\n=== Chronological Epoch Timeline ===\n");
+	mm_buf_appendf(&buf, &pos, &cap, "\n=== Chronological Epoch Timeline ===\n");
 	char months[32][8];
 	size_t month_counts[32] = {0};
 	const char *month_sample[32] = {0};
@@ -2207,9 +2238,9 @@ int mm_build_memory_overview(mm_ctx_t *ctx, mm_tier_t tier, int max_per_bucket,
 		}
 	}
 	for (size_t m = 0; m < n_months; m++) {
-		pos += (size_t)snprintf(buf + pos, cap - pos, "  • [%s] (%zu record%s) — %s\n",
-		                        months[m], month_counts[m], month_counts[m] == 1 ? "" : "s",
-		                        month_sample[m] ? month_sample[m] : "");
+		mm_buf_appendf(&buf, &pos, &cap, "  • [%s] (%zu record%s) — %s\n",
+		               months[m], month_counts[m], month_counts[m] == 1 ? "" : "s",
+		               month_sample[m] ? month_sample[m] : "");
 	}
 
 	for (size_t i = 0; i < n_recs; i++) {
@@ -2272,7 +2303,14 @@ int mm_evaluate_guardrail(mm_ctx_t *ctx, const char *intent_text,
 
 	size_t cap = 4096;
 	char *buf = (char *)malloc(cap);
-	size_t pos = (size_t)snprintf(buf, cap,
+	if (!buf) {
+		for (size_t i = 0; i < n_recs; i++) mm_envelope_free(&recs[i].env);
+		free(recs);
+		return -1;
+	}
+	buf[0] = '\0';
+	size_t pos = 0;
+	mm_buf_appendf(&buf, &pos, &cap,
 		"=== [MEMORY GUARDRAIL WARNING — Pre-Flight Counterfactual Check] ===\n");
 	size_t warnings = 0;
 
@@ -2292,7 +2330,7 @@ int mm_evaluate_guardrail(mm_ctx_t *ctx, const char *intent_text,
 		/* 1. Contradicted memory warning */
 		if (e->lifecycle == MM_STATUS_CONTRADICTED && (file_match || sym_match || kw_hits >= 2)) {
 			warnings++;
-			pos += (size_t)snprintf(buf + pos, cap - pos,
+			mm_buf_appendf(&buf, &pos, &cap,
 				"• [HIGH] [contradicted_memory] [Ref %s:%u] Contradicted hypothesis matches target: %s\n",
 				recs[i].tier == MM_TIER_GLOBAL ? "G" : "P", recs[i].ref, sum);
 		}
@@ -2304,7 +2342,7 @@ int mm_evaluate_guardrail(mm_ctx_t *ctx, const char *intent_text,
 				size_t ap_hits = count_keyword_overlap(combined_target, ap->approach);
 				if (file_match || sym_match || ap_hits >= 2 || kw_hits >= 2) {
 					warnings++;
-					pos += (size_t)snprintf(buf + pos, cap - pos,
+					mm_buf_appendf(&buf, &pos, &cap,
 						"• [HIGH] [failed_approach] [Ref %s:%u] Previously %s approach: \"%s\" (Reason: %s)\n",
 						recs[i].tier == MM_TIER_GLOBAL ? "G" : "P", recs[i].ref,
 						ap->outcome, ap->approach, ap->reason[0] ? ap->reason : "see episode");
@@ -2318,7 +2356,7 @@ int mm_evaluate_guardrail(mm_ctx_t *ctx, const char *intent_text,
 		    has_prohibitive_language(sum) &&
 		    (file_match || sym_match || kw_hits >= 1)) {
 			warnings++;
-			pos += (size_t)snprintf(buf + pos, cap - pos,
+			mm_buf_appendf(&buf, &pos, &cap,
 				"• [HIGH] [standing_restriction] [Ref %s:%u] Standing restriction applies: %s\n",
 				recs[i].tier == MM_TIER_GLOBAL ? "G" : "P", recs[i].ref, sum);
 		}
@@ -2331,7 +2369,7 @@ int mm_evaluate_guardrail(mm_ctx_t *ctx, const char *intent_text,
 		if (mm_lore_verify_drift(ctx, check_target, &drift_out, NULL) == 0 && drift_out) {
 			if (strstr(drift_out, "STALE_SUSPECT")) {
 				warnings++;
-				pos += (size_t)snprintf(buf + pos, cap - pos,
+				mm_buf_appendf(&buf, &pos, &cap,
 					"• [MEDIUM] [stale_bound_invariant] Bound code invariant has drifted:\n%s",
 					drift_out);
 			}
@@ -2345,7 +2383,7 @@ int mm_evaluate_guardrail(mm_ctx_t *ctx, const char *intent_text,
 	free(recs);
 
 	if (warnings == 0) {
-		pos += (size_t)snprintf(buf + pos, cap - pos, "No counterfactual guardrail warnings triggered.\n");
+		mm_buf_appendf(&buf, &pos, &cap, "No counterfactual guardrail warnings triggered.\n");
 	}
 	*out_buf = buf;
 	if (out_len) *out_len = pos;
@@ -2674,7 +2712,9 @@ int mm_recall_persistent(mm_ctx_t *ctx, const mm_recall_req_t *req,
 		size_t cap = 8192;
 		char *card = (char *)malloc(cap);
 		if (!card) { mm_envelope_free(&env); return -1; }
-		size_t pos = (size_t)snprintf(card, cap,
+		card[0] = '\0';
+		size_t pos = 0;
+		mm_buf_appendf(&card, &pos, &cap,
 			"=== Persistent Memory [Ref %s:%u] (%s, %s%s) ===\n"
 			"Timestamp: %s\n"
 			"Type: %s\n"
@@ -2691,35 +2731,35 @@ int mm_recall_persistent(mm_ctx_t *ctx, const mm_recall_req_t *req,
 			env.summary ? env.summary : "");
 
 		if (env.n_approaches > 0) {
-			pos += (size_t)snprintf(card + pos, cap - pos, "Approaches (%zu):\n", env.n_approaches);
+			mm_buf_appendf(&card, &pos, &cap, "Approaches (%zu):\n", env.n_approaches);
 			for (size_t i = 0; i < env.n_approaches; i++) {
-				pos += (size_t)snprintf(card + pos, cap - pos, "  • [%s] %s%s%s\n",
-				                        env.ep_approaches[i].outcome,
-				                        env.ep_approaches[i].approach,
-				                        env.ep_approaches[i].reason[0] ? " — " : "",
-				                        env.ep_approaches[i].reason);
+				mm_buf_appendf(&card, &pos, &cap, "  • [%s] %s%s%s\n",
+				               env.ep_approaches[i].outcome,
+				               env.ep_approaches[i].approach,
+				               env.ep_approaches[i].reason[0] ? " — " : "",
+				               env.ep_approaches[i].reason);
 			}
 		}
 		if (env.n_findings > 0) {
-			pos += (size_t)snprintf(card + pos, cap - pos, "Findings (%zu):\n", env.n_findings);
+			mm_buf_appendf(&card, &pos, &cap, "Findings (%zu):\n", env.n_findings);
 			for (size_t i = 0; i < env.n_findings; i++) {
-				pos += (size_t)snprintf(card + pos, cap - pos, "  • %s\n", env.ep_findings[i]);
+				mm_buf_appendf(&card, &pos, &cap, "  • %s\n", env.ep_findings[i]);
 			}
 		}
 		if (env.n_history > 0) {
-			pos += (size_t)snprintf(card + pos, cap - pos, "Lifecycle History (%zu):\n", env.n_history);
+			mm_buf_appendf(&card, &pos, &cap, "Lifecycle History (%zu):\n", env.n_history);
 			for (size_t i = 0; i < env.n_history; i++) {
-				pos += (size_t)snprintf(card + pos, cap - pos, "  • %s -> %s (%s): %s\n",
-				                        mm_status_to_str(env.history[i].from),
-				                        mm_status_to_str(env.history[i].to),
-				                        env.history[i].timestamp,
-				                        env.history[i].reason);
+				mm_buf_appendf(&card, &pos, &cap, "  • %s -> %s (%s): %s\n",
+				               mm_status_to_str(env.history[i].from),
+				               mm_status_to_str(env.history[i].to),
+				               env.history[i].timestamp,
+				               env.history[i].reason);
 			}
 		}
 		if (env.n_evidence > 0 || req->include_evidence) {
 			char *tree_buf = NULL;
 			if (mm_traverse(ctx, ztier, req->zoom_ref, "down", 3, &tree_buf, NULL) == 0 && tree_buf) {
-				pos += (size_t)snprintf(card + pos, cap - pos, "%s", tree_buf);
+				mm_buf_appendf(&card, &pos, &cap, "%s", tree_buf);
 				free(tree_buf);
 			}
 		}
@@ -2741,14 +2781,15 @@ int mm_recall_persistent(mm_ctx_t *ctx, const mm_recall_req_t *req,
 		mm_candidates_free(ranked, n_ranked);
 		return -1;
 	}
+	buf[0] = '\0';
 	size_t pos = 0;
 
 	if (req->json_output) {
-		pos += (size_t)snprintf(buf + pos, cap - pos, "[");
+		mm_buf_appendf(&buf, &pos, &cap, "[");
 		for (size_t i = 0; i < n_ranked; i++) {
 			char *jstr = NULL;
 			if (mm_envelope_to_json(&ranked[i].envelope, &jstr, NULL) == 0 && jstr) {
-				pos += (size_t)snprintf(buf + pos, cap - pos,
+				mm_buf_appendf(&buf, &pos, &cap,
 					"%s{\"tier\":\"%s\",\"ref\":%u,\"origin\":\"%s\",\"score\":%.6f,\"envelope\":%s}",
 					(i > 0 ? "," : ""),
 					ranked[i].tier == MM_TIER_GLOBAL ? "global" : "project",
@@ -2759,15 +2800,15 @@ int mm_recall_persistent(mm_ctx_t *ctx, const mm_recall_req_t *req,
 				free(jstr);
 			}
 		}
-		pos += (size_t)snprintf(buf + pos, cap - pos, "]");
+		mm_buf_appendf(&buf, &pos, &cap, "]");
 	} else {
-		pos += (size_t)snprintf(buf + pos, cap - pos,
+		mm_buf_appendf(&buf, &pos, &cap,
 			"=== Persistent Memory Results (%zu match%s) ===\n",
 			n_ranked, n_ranked == 1 ? "" : "es");
 		for (size_t i = 0; i < n_ranked; i++) {
 			const mm_candidate_t *c = &ranked[i];
 			const mm_envelope_t *e = &c->envelope;
-			pos += (size_t)snprintf(buf + pos, cap - pos,
+			mm_buf_appendf(&buf, &pos, &cap,
 				"[Ref %s:%u] (%s, %s%s%s): %s\n"
 				"  Origin: %s (score: %.6f)\n",
 				c->tier == MM_TIER_GLOBAL ? "G" : "P",
@@ -2782,7 +2823,7 @@ int mm_recall_persistent(mm_ctx_t *ctx, const mm_recall_req_t *req,
 			if (req->include_evidence && e->n_evidence > 0) {
 				char *tree_buf = NULL;
 				if (mm_traverse(ctx, c->tier, c->ref, "down", 2, &tree_buf, NULL) == 0 && tree_buf) {
-					pos += (size_t)snprintf(buf + pos, cap - pos, "%s", tree_buf);
+					mm_buf_appendf(&buf, &pos, &cap, "%s", tree_buf);
 					free(tree_buf);
 				}
 			}

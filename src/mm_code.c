@@ -6,6 +6,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 #include <string.h>
 #include <ctype.h>
 #include <dirent.h>
@@ -21,6 +22,31 @@
 #define popen _popen
 #define pclose _pclose
 #endif
+
+static void mm_buf_appendf(char **buf, size_t *pos, size_t *cap, const char *fmt, ...) {
+	if (!buf || !*buf || !pos || !cap) return;
+	for (;;) {
+		size_t avail = (*cap > *pos) ? (*cap - *pos) : 0;
+		va_list ap;
+		va_start(ap, fmt);
+		int n = vsnprintf(*buf + *pos, avail, fmt, ap);
+		va_end(ap);
+		if (n < 0) return;
+		if ((size_t)n < avail) {
+			*pos += (size_t)n;
+			return;
+		}
+		size_t new_cap = *cap ? *cap * 2 : 4096;
+		while (new_cap <= *pos + (size_t)n + 1) new_cap *= 2;
+		char *nb = (char *)realloc(*buf, new_cap);
+		if (!nb) {
+			if (avail > 0) *pos = *cap - 1;
+			return;
+		}
+		*buf = nb;
+		*cap = new_cap;
+	}
+}
 
 /* ============================================================================
  * 1. Code Index Lifecycle & Helpers
@@ -1119,6 +1145,7 @@ int mm_code_resolve_cross_boundary_pairs(const mm_code_index_t *idx,
 	size_t cap = 4096;
 	char *buf = (char *)malloc(cap);
 	size_t pos = 0;
+	buf[0] = '\0';
 	size_t pairs = 0;
 
 	/* 1. XY_DECL <-> XY_IMPL pairs for symbol_name */
@@ -1134,11 +1161,11 @@ int mm_code_resolve_cross_boundary_pairs(const mm_code_index_t *idx,
 		}
 		if (decl_sym && impl_sym) {
 			if (pairs == 0) {
-				pos += (size_t)snprintf(buf + pos, cap - pos,
+				mm_buf_appendf(&buf, &pos, &cap,
 					"=== Cross-Boundary Protocol & Isomorphic Pairs ===\n");
 			}
 			pairs++;
-			pos += (size_t)snprintf(buf + pos, cap - pos,
+			mm_buf_appendf(&buf, &pos, &cap,
 				"  • [XY Protocol Pair] %s: Decl (%s:%d) <-> Impl (%s:%d)\n",
 				symbol_name, decl_sym->file_path, decl_sym->start_line,
 				impl_sym->file_path, impl_sym->start_line);
@@ -1170,11 +1197,11 @@ int mm_code_resolve_cross_boundary_pairs(const mm_code_index_t *idx,
 			for (size_t i = 0; i < idx->n_symbols; i++) {
 				if (strncmp(idx->symbols[i].file_path, prefix, strlen(prefix)) == 0) {
 					if (pairs == 0) {
-						pos += (size_t)snprintf(buf + pos, cap - pos,
+						mm_buf_appendf(&buf, &pos, &cap,
 							"=== Cross-Boundary Protocol & Isomorphic Pairs ===\n");
 					}
 					pairs++;
-					pos += (size_t)snprintf(buf + pos, cap - pos,
+					mm_buf_appendf(&buf, &pos, &cap,
 						"  • [Isomorphic Server/UX Pair] %s <-> %s (%s:%d)\n",
 						check_path, idx->symbols[i].name,
 						idx->symbols[i].file_path, idx->symbols[i].start_line);
@@ -1215,6 +1242,7 @@ int mm_code_detect_xy_mismatches(const mm_code_index_t *idx,
 	size_t cap = 4096;
 	char *buf = (char *)malloc(cap);
 	size_t pos = 0;
+	buf[0] = '\0';
 	size_t mismatches = 0;
 
 	for (size_t i = 0; i < idx->n_symbols; i++) {
@@ -1229,9 +1257,9 @@ int mm_code_detect_xy_mismatches(const mm_code_index_t *idx,
 				}
 			}
 			if (!impl) {
-				if (mismatches == 0) pos += (size_t)snprintf(buf + pos, cap - pos, "=== XY Contract Flight Check ===\n");
+				if (mismatches == 0) mm_buf_appendf(&buf, &pos, &cap, "=== XY Contract Flight Check ===\n");
 				mismatches++;
-				pos += (size_t)snprintf(buf + pos, cap - pos,
+				mm_buf_appendf(&buf, &pos, &cap,
 					"  • [missing_impl] XY_DECL %s (%s:%d) has no matching XY_IMPL\n",
 					s->name, s->file_path, s->start_line);
 			} else {
@@ -1239,9 +1267,9 @@ int mm_code_detect_xy_mismatches(const mm_code_index_t *idx,
 				extract_xy_macro_params(s->signature, p_decl, sizeof(p_decl));
 				extract_xy_macro_params(impl->signature, p_impl, sizeof(p_impl));
 				if (strcmp(p_decl, p_impl) != 0) {
-					if (mismatches == 0) pos += (size_t)snprintf(buf + pos, cap - pos, "=== XY Contract Flight Check ===\n");
+					if (mismatches == 0) mm_buf_appendf(&buf, &pos, &cap, "=== XY Contract Flight Check ===\n");
 					mismatches++;
-					pos += (size_t)snprintf(buf + pos, cap - pos,
+					mm_buf_appendf(&buf, &pos, &cap,
 						"  • [signature_mismatch] %s: XY_DECL(%s) at %s:%d != XY_IMPL(%s) at %s:%d\n",
 						s->name, p_decl, s->file_path, s->start_line,
 						p_impl, impl->file_path, impl->start_line);
@@ -1257,9 +1285,9 @@ int mm_code_detect_xy_mismatches(const mm_code_index_t *idx,
 				}
 			}
 			if (!has_decl) {
-				if (mismatches == 0) pos += (size_t)snprintf(buf + pos, cap - pos, "=== XY Contract Flight Check ===\n");
+				if (mismatches == 0) mm_buf_appendf(&buf, &pos, &cap, "=== XY Contract Flight Check ===\n");
 				mismatches++;
-				pos += (size_t)snprintf(buf + pos, cap - pos,
+				mm_buf_appendf(&buf, &pos, &cap,
 					"  • [missing_decl] XY_IMPL %s (%s:%d) has no matching XY_DECL header\n",
 					s->name, s->file_path, s->start_line);
 			}
@@ -1328,30 +1356,31 @@ int mm_code_first_touch_dossier(const mm_code_index_t *idx,
 
 	size_t cap = 4096;
 	char *buf = (char *)malloc(cap);
-	size_t pos = (size_t)snprintf(buf, cap,
+	size_t pos = 0;
+	mm_buf_appendf(&buf, &pos, &cap,
 		"=== First-Touch Module Dossier (%s) ===\n"
 		"  • Tier-0 Verification Gate: `%s`\n",
 		target_file, gate_cmd);
 
 	if (strstr(target_file, "/ux/")) {
-		pos += (size_t)snprintf(buf + pos, cap - pos,
+		mm_buf_appendf(&buf, &pos, &cap,
 			"  • Isomorphic UX Boundary: Pure C + bud_jsx.h + stele_wasm.h only (forbidden: XY_/corm_/source_/axil_).\n");
 	} else if (strncmp(target_file, "mods/", 5) == 0) {
-		pos += (size_t)snprintf(buf + pos, cap - pos,
+		mm_buf_appendf(&buf, &pos, &cap,
 			"  • Server XY Module Boundary: Two-header rule (<M>-types.h vs <M>.h); static by default; declare deps via xy_load().\n");
 	}
 
 	/* List up to 5 key entrypoints in the same file */
-	pos += (size_t)snprintf(buf + pos, cap - pos, "  • Key Module Symbols:");
+	mm_buf_appendf(&buf, &pos, &cap, "  • Key Module Symbols:");
 	int shown = 0;
 	for (size_t i = 0; i < idx->n_symbols && shown < 5; i++) {
 		if (!strcmp(idx->symbols[i].file_path, target_file)) {
-			pos += (size_t)snprintf(buf + pos, cap - pos, " %s(%s)",
-			                        idx->symbols[i].name, mm_sym_kind_to_str(idx->symbols[i].kind));
+			mm_buf_appendf(&buf, &pos, &cap, " %s(%s)",
+			               idx->symbols[i].name, mm_sym_kind_to_str(idx->symbols[i].kind));
 			shown++;
 		}
 	}
-	pos += (size_t)snprintf(buf + pos, cap - pos, "\n");
+	mm_buf_appendf(&buf, &pos, &cap, "\n");
 
 	*out_buf = buf;
 	if (out_len) *out_len = pos;
@@ -1374,6 +1403,7 @@ int mm_code_read_symbols_ex(const mm_code_index_t *idx,
 	char *buf = (char *)malloc(cap);
 	if (!buf) return -1;
 	size_t pos = 0;
+	buf[0] = '\0';
 
 	for (size_t s_idx = 0; s_idx < n_symbols; s_idx++) {
 		const char *symbol_name = symbols[s_idx];
@@ -1418,15 +1448,15 @@ int mm_code_read_symbols_ex(const mm_code_index_t *idx,
 		}
 
 		if (n_matches == 0) {
-			pos += (size_t)snprintf(buf + pos, cap - pos, "No symbol matching '%s' found.\n", symbol_name);
+			mm_buf_appendf(&buf, &pos, &cap, "No symbol matching '%s' found.\n", symbol_name);
 			continue;
 		}
 		if (n_matches > 1) {
-			pos += (size_t)snprintf(buf + pos, cap - pos,
+			mm_buf_appendf(&buf, &pos, &cap,
 				"Ambiguous symbol '%s' (%zu matches). Specify file or parentSymbol filter:\n",
 				symbol_name, n_matches);
 			for (size_t i = 0; i < n_matches; i++) {
-				pos += (size_t)snprintf(buf + pos, cap - pos,
+				mm_buf_appendf(&buf, &pos, &cap,
 					"  • [SymRef %u] (%s%s%s) %s:%d-%d · %s\n",
 					matches[i]->ref,
 					mm_sym_kind_to_str(matches[i]->kind),
@@ -1442,39 +1472,39 @@ int mm_code_read_symbols_ex(const mm_code_index_t *idx,
 		int s_line = (line_start > 0) ? line_start : sym->start_line;
 		int e_line = (line_end > 0)   ? line_end   : sym->end_line;
 
-		pos += (size_t)snprintf(buf + pos, cap - pos,
+		mm_buf_appendf(&buf, &pos, &cap,
 			"=== [SymRef %u] %s %s:%d-%d (%s) ===\n"
 			"Signature: %s\n",
 			sym->ref, mm_sym_kind_to_str(sym->kind),
 			sym->file_path, sym->start_line, sym->end_line,
 			sym->qualified_name, sym->signature);
 		if (sym->parent_symbol[0]) {
-			pos += (size_t)snprintf(buf + pos, cap - pos, "Parent: %s\n", sym->parent_symbol);
+			mm_buf_appendf(&buf, &pos, &cap, "Parent: %s\n", sym->parent_symbol);
 		}
 		if (sym->doc_comment[0]) {
-			pos += (size_t)snprintf(buf + pos, cap - pos, "Doc: %s\n", sym->doc_comment);
+			mm_buf_appendf(&buf, &pos, &cap, "Doc: %s\n", sym->doc_comment);
 		}
 
 		bool show_callers = !neighbors || !*neighbors || !strcmp(neighbors, "both") || !strcmp(neighbors, "callers");
 		bool show_callees = !neighbors || !*neighbors || !strcmp(neighbors, "both") || !strcmp(neighbors, "callees");
 
 		if (show_callers && sym->n_callers > 0) {
-			pos += (size_t)snprintf(buf + pos, cap - pos, "Inbound Callers (%zu):\n", sym->n_callers);
+			mm_buf_appendf(&buf, &pos, &cap, "Inbound Callers (%zu):\n", sym->n_callers);
 			for (size_t i = 0; i < sym->n_callers; i++) {
 				const mm_code_symbol_t *c = find_sym_by_ref(idx, sym->callers[i]);
 				if (c) {
-					pos += (size_t)snprintf(buf + pos, cap - pos, "  <- %s (%s:%d)\n",
-					                        c->name, c->file_path, c->start_line);
+					mm_buf_appendf(&buf, &pos, &cap, "  <- %s (%s:%d)\n",
+					               c->name, c->file_path, c->start_line);
 				}
 			}
 		}
 		if (show_callees && sym->n_callees > 0) {
-			pos += (size_t)snprintf(buf + pos, cap - pos, "Outbound Callees (%zu):\n", sym->n_callees);
+			mm_buf_appendf(&buf, &pos, &cap, "Outbound Callees (%zu):\n", sym->n_callees);
 			for (size_t i = 0; i < sym->n_callees; i++) {
 				const mm_code_symbol_t *c = find_sym_by_ref(idx, sym->callees[i]);
 				if (c) {
-					pos += (size_t)snprintf(buf + pos, cap - pos, "  -> %s (%s:%d)\n",
-					                        c->name, c->file_path, c->start_line);
+					mm_buf_appendf(&buf, &pos, &cap, "  -> %s (%s:%d)\n",
+					               c->name, c->file_path, c->start_line);
 				}
 			}
 		}
@@ -1484,20 +1514,15 @@ int mm_code_read_symbols_ex(const mm_code_index_t *idx,
 		snprintf(abs_path, sizeof(abs_path), "%s/%s", idx->root_dir, sym->file_path);
 		FILE *fp = fopen(abs_path, "r");
 		if (fp) {
-			pos += (size_t)snprintf(buf + pos, cap - pos, "--- Source (%s:%d-%d) ---\n",
-			                        sym->file_path, s_line, e_line);
+			mm_buf_appendf(&buf, &pos, &cap, "--- Source (%s:%d-%d) ---\n",
+			               sym->file_path, s_line, e_line);
 			char line[1024];
 			int cur = 0;
 			while (fgets(line, sizeof(line), fp)) {
 				cur++;
 				if (cur < s_line) continue;
 				if (cur > e_line) break;
-				size_t need = strlen(line) + 32;
-				if (pos + need >= cap) {
-					cap *= 2;
-					buf = (char *)realloc(buf, cap);
-				}
-				pos += (size_t)snprintf(buf + pos, cap - pos, "%4d: %s", cur, line);
+				mm_buf_appendf(&buf, &pos, &cap, "%4d: %s", cur, line);
 			}
 			fclose(fp);
 		}
@@ -1505,12 +1530,12 @@ int mm_code_read_symbols_ex(const mm_code_index_t *idx,
 		/* Append Cross-Boundary Pairs & First-Touch Module Dossier */
 		char *pairs_buf = NULL;
 		if (mm_code_resolve_cross_boundary_pairs(idx, sym->name, sym->file_path, &pairs_buf, NULL) == 0 && pairs_buf) {
-			if (pairs_buf[0]) pos += (size_t)snprintf(buf + pos, cap - pos, "%s", pairs_buf);
+			if (pairs_buf[0]) mm_buf_appendf(&buf, &pos, &cap, "%s", pairs_buf);
 			free(pairs_buf);
 		}
 		char *dossier_buf = NULL;
 		if (mm_code_first_touch_dossier(idx, sym->file_path, &dossier_buf, NULL) == 0 && dossier_buf) {
-			pos += (size_t)snprintf(buf + pos, cap - pos, "%s", dossier_buf);
+			mm_buf_appendf(&buf, &pos, &cap, "%s", dossier_buf);
 			free(dossier_buf);
 		}
 	}
@@ -1561,12 +1586,13 @@ int mm_code_search(const mm_code_index_t *idx, const char *query,
 	size_t show = n_matched < (size_t)limit ? n_matched : (size_t)limit;
 	size_t cap = 1024 + show * 512;
 	char *buf = (char *)malloc(cap);
-	size_t pos = (size_t)snprintf(buf, cap,
+	size_t pos = 0;
+	mm_buf_appendf(&buf, &pos, &cap,
 		"=== Codebase Symbols (%zu matches for \"%s\") ===\n",
 		n_matched, query ? query : "");
 	for (size_t i = 0; i < show; i++) {
 		const mm_code_symbol_t *s = matched[i];
-		pos += (size_t)snprintf(buf + pos, cap - pos,
+		mm_buf_appendf(&buf, &pos, &cap,
 			"• [SymRef %u] (%s) %s:%d-%d · %s [callers:%zu callees:%zu]\n"
 			"    Sig: %s\n",
 			s->ref, mm_sym_kind_to_str(s->kind),
@@ -1590,14 +1616,10 @@ static void format_trace_recursive(const mm_code_index_t *idx, const mm_code_sym
 	for (size_t i = 0; i < n_edges; i++) {
 		const mm_code_symbol_t *child = find_sym_by_ref(idx, edges[i]);
 		if (!child) continue;
-		if (*pos + 512 >= *cap) {
-			*cap *= 2;
-			*buf = (char *)realloc(*buf, *cap);
-		}
 		for (int d = 0; d < depth; d++) {
-			*pos += (size_t)snprintf(*buf + *pos, *cap - *pos, "  ");
+			mm_buf_appendf(buf, pos, cap, "  ");
 		}
-		*pos += (size_t)snprintf(*buf + *pos, *cap - *pos,
+		mm_buf_appendf(buf, pos, cap,
 			"%s [SymRef %u] %s (%s:%d-%d)\n",
 			inbound ? "<-" : "->",
 			child->ref, child->name, child->file_path, child->start_line, child->end_line);
@@ -1641,18 +1663,19 @@ int mm_code_trace(const mm_code_index_t *idx, const char *symbol_name,
 
 	size_t cap = 8192;
 	char *buf = (char *)malloc(cap);
-	size_t pos = (size_t)snprintf(buf, cap,
+	size_t pos = 0;
+	mm_buf_appendf(&buf, &pos, &cap,
 		"=== Call Graph Trace: %s (%s:%d-%d, depth=%d) ===\n",
 		root->name, root->file_path, root->start_line, root->end_line, max_depth);
 
 	if (do_in) {
-		pos += (size_t)snprintf(buf + pos, cap - pos, "Inbound Callers:\n");
+		mm_buf_appendf(&buf, &pos, &cap, "Inbound Callers:\n");
 		uint32_t visited[256] = { root->ref };
 		size_t n_vis = 1;
 		format_trace_recursive(idx, root, true, 1, max_depth, visited, &n_vis, &buf, &pos, &cap);
 	}
 	if (do_out) {
-		pos += (size_t)snprintf(buf + pos, cap - pos, "Outbound Callees:\n");
+		mm_buf_appendf(&buf, &pos, &cap, "Outbound Callees:\n");
 		uint32_t visited[256] = { root->ref };
 		size_t n_vis = 1;
 		format_trace_recursive(idx, root, false, 1, max_depth, visited, &n_vis, &buf, &pos, &cap);
@@ -1674,7 +1697,8 @@ int mm_code_overview(const mm_code_index_t *idx, char **out_buf, size_t *out_len
 
 	size_t cap = 8192;
 	char *buf = (char *)malloc(cap);
-	size_t pos = (size_t)snprintf(buf, cap,
+	size_t pos = 0;
+	mm_buf_appendf(&buf, &pos, &cap,
 		"=== Codebase Architecture Overview (L3/L2 Mipmap) ===\n"
 		"Root: %s\n"
 		"Files: %zu | Symbols: %zu | Call Edges: %zu | HTTP Routes: %zu\n"
@@ -1697,17 +1721,17 @@ int mm_code_overview(const mm_code_index_t *idx, char **out_buf, size_t *out_len
 		if (best < 0) break;
 		picked[best] = true;
 		const mm_code_symbol_t *s = &idx->symbols[best];
-		pos += (size_t)snprintf(buf + pos, cap - pos,
+		mm_buf_appendf(&buf, &pos, &cap,
 			"  • [SymRef %u] %s (%s:%d-%d) — degree:%zu (in:%zu out:%zu)\n",
 			s->ref, s->name, s->file_path, s->start_line, s->end_line,
 			best_deg, s->n_callers, s->n_callees);
 	}
 
 	if (n_routes > 0) {
-		pos += (size_t)snprintf(buf + pos, cap - pos, "Registered HTTP Routes:\n");
+		mm_buf_appendf(&buf, &pos, &cap, "Registered HTTP Routes:\n");
 		for (size_t i = 0; i < idx->n_symbols; i++) {
 			if (idx->symbols[i].kind == MM_SYM_ROUTE) {
-				pos += (size_t)snprintf(buf + pos, cap - pos,
+				mm_buf_appendf(&buf, &pos, &cap,
 					"  • %s (%s:%d)\n",
 					idx->symbols[i].name, idx->symbols[i].file_path, idx->symbols[i].start_line);
 			}
@@ -1777,7 +1801,8 @@ int mm_code_diff_impact(const mm_code_index_t *idx, int depth, char **out_buf, s
 
 	size_t cap = 8192;
 	char *buf = (char *)malloc(cap);
-	size_t pos = (size_t)snprintf(buf, cap,
+	size_t pos = 0;
+	mm_buf_appendf(&buf, &pos, &cap,
 		"=== Worktree Diff Impact & Blast Radius (%zu modified symbol%s) ===\n",
 		n_affected, n_affected == 1 ? "" : "s");
 
@@ -1786,7 +1811,7 @@ int mm_code_diff_impact(const mm_code_index_t *idx, int depth, char **out_buf, s
 		if (!s) continue;
 		char gate_cmd[256];
 		infer_tier0_gate(s->file_path, gate_cmd, sizeof(gate_cmd));
-		pos += (size_t)snprintf(buf + pos, cap - pos,
+		mm_buf_appendf(&buf, &pos, &cap,
 			"• Modified [SymRef %u] %s (%s:%d-%d) [Gate: `%s`]\n",
 			s->ref, s->name, s->file_path, s->start_line, s->end_line, gate_cmd);
 		uint32_t visited[256] = { s->ref };
@@ -1796,7 +1821,7 @@ int mm_code_diff_impact(const mm_code_index_t *idx, int depth, char **out_buf, s
 
 	char *xy_buf = NULL;
 	if (mm_code_detect_xy_mismatches(idx, &xy_buf, NULL) == 0 && xy_buf) {
-		if (xy_buf[0]) pos += (size_t)snprintf(buf + pos, cap - pos, "%s", xy_buf);
+		if (xy_buf[0]) mm_buf_appendf(&buf, &pos, &cap, "%s", xy_buf);
 		free(xy_buf);
 	}
 
@@ -1874,7 +1899,8 @@ int mm_code_diagnose(const mm_code_index_t *idx, const char *trace_text,
 
 	size_t cap = 8192;
 	char *buf = (char *)malloc(cap);
-	size_t pos = (size_t)snprintf(buf, cap,
+	size_t pos = 0;
+	mm_buf_appendf(&buf, &pos, &cap,
 		"=== Fault Localization & Differential Failure Topology ===\n");
 
 	/* Check Causal Fault Intersections between stack_refs and diff_refs */
@@ -1887,7 +1913,7 @@ int mm_code_diagnose(const mm_code_index_t *idx, const char *trace_text,
 			if (diff_refs[d] == s->ref) { on_diff = true; break; }
 		}
 		if (on_diff) {
-			pos += (size_t)snprintf(buf + pos, cap - pos,
+			mm_buf_appendf(&buf, &pos, &cap,
 				"🔥 [FAULT ROOT · hop 0] [modified_on_stack] %s (%s:%d-%d) is both on the failure stack and modified in git diff!\n",
 				s->name, s->file_path, s->start_line, s->end_line);
 		} else {
@@ -1897,7 +1923,7 @@ int mm_code_diagnose(const mm_code_index_t *idx, const char *trace_text,
 					if (s->callees[c] == diff_refs[d]) {
 						const mm_code_symbol_t *cal = find_sym_by_ref(idx, s->callees[c]);
 						if (cal) {
-							pos += (size_t)snprintf(buf + pos, cap - pos,
+							mm_buf_appendf(&buf, &pos, &cap,
 								"⚠️ [MODIFIED CALLEE · hop 1] [modified_callee_of_stack] Stack frame %s calls modified symbol %s (%s:%d-%d)\n",
 								s->name, cal->name, cal->file_path, cal->start_line, cal->end_line);
 						}
@@ -1906,7 +1932,7 @@ int mm_code_diagnose(const mm_code_index_t *idx, const char *trace_text,
 			}
 		}
 
-		pos += (size_t)snprintf(buf + pos, cap - pos,
+		mm_buf_appendf(&buf, &pos, &cap,
 			"• Suspect [SymRef %u] %s (%s:%d-%d)\n    Sig: %s\n",
 			s->ref, s->name, s->file_path, s->start_line, s->end_line, s->signature);
 		uint32_t visited[256] = { s->ref };
@@ -2053,18 +2079,18 @@ int mm_lore_verify_drift(mm_ctx_t *ctx, const char *symbol_or_file,
 		}
 
 		if (!cur_sym) {
-			pos += (size_t)snprintf(buf + pos, cap - pos,
+			mm_buf_appendf(&buf, &pos, &cap,
 				"⚠️ [STALE_SUSPECT] [Ref P:%u] Bound symbol `%s` (%s) was deleted or renamed!\n",
 				ref, sname, fpath);
 		} else {
 			char cur_hash[32];
 			compute_symbol_fingerprint(cur_sym, cur_hash, sizeof(cur_hash));
 			if (strcmp(cur_hash, old_hash) != 0) {
-				pos += (size_t)snprintf(buf + pos, cap - pos,
+				mm_buf_appendf(&buf, &pos, &cap,
 					"⚠️ [STALE_SUSPECT] [Ref P:%u] Bound symbol `%s` (%s:%d-%d) signature/callees mutated since invariant was recorded!\n",
 					ref, sname, fpath, cur_sym->start_line, cur_sym->end_line);
 			} else {
-				pos += (size_t)snprintf(buf + pos, cap - pos,
+				mm_buf_appendf(&buf, &pos, &cap,
 					"✓ [FRESH] [Ref P:%u] Bound symbol `%s` (%s:%d-%d) matches AST fingerprint %s.\n",
 					ref, sname, fpath, cur_sym->start_line, cur_sym->end_line, cur_hash);
 			}
@@ -2150,21 +2176,21 @@ int mm_context_check_drift(mm_ctx_t *ctx, const char *session_id,
 		}
 
 		if (!cur) {
-			if (pos == 0) pos += (size_t)snprintf(buf + pos, cap - pos, "=== Proactive Context Drift Warning ===\n");
-			pos += (size_t)snprintf(buf + pos, cap - pos,
+			if (pos == 0) mm_buf_appendf(&buf, &pos, &cap, "=== Proactive Context Drift Warning ===\n");
+			mm_buf_appendf(&buf, &pos, &cap,
 				"• [removed] `%s` in %s (was lines %d-%d at Turn %d)\n",
 				sname, fpath, old_s, old_e, turn);
 		} else {
 			char cur_h[32];
 			compute_symbol_fingerprint(cur, cur_h, sizeof(cur_h));
 			if (strcmp(cur_h, old_h) != 0) {
-				if (pos == 0) pos += (size_t)snprintf(buf + pos, cap - pos, "=== Proactive Context Drift Warning ===\n");
-				pos += (size_t)snprintf(buf + pos, cap - pos,
+				if (pos == 0) mm_buf_appendf(&buf, &pos, &cap, "=== Proactive Context Drift Warning ===\n");
+				mm_buf_appendf(&buf, &pos, &cap,
 					"• [modified] `%s` in %s (lines %d-%d -> %d-%d)\n",
 					sname, fpath, old_s, old_e, cur->start_line, cur->end_line);
 			} else if (cur->start_line != old_s || cur->end_line != old_e) {
-				if (pos == 0) pos += (size_t)snprintf(buf + pos, cap - pos, "=== Proactive Context Drift Warning ===\n");
-				pos += (size_t)snprintf(buf + pos, cap - pos,
+				if (pos == 0) mm_buf_appendf(&buf, &pos, &cap, "=== Proactive Context Drift Warning ===\n");
+				mm_buf_appendf(&buf, &pos, &cap,
 					"• [lines_shifted] `%s` in %s shifted lines %d-%d -> %d-%d\n",
 					sname, fpath, old_s, old_e, cur->start_line, cur->end_line);
 			}
@@ -2182,8 +2208,8 @@ int mm_context_check_drift(mm_ctx_t *ctx, const char *session_id,
 					if (!strcmp(seen_syms[k], s->name)) { was_seen = true; break; }
 				}
 				if (!was_seen) {
-					if (pos == 0) pos += (size_t)snprintf(buf + pos, cap - pos, "=== Proactive Context Drift Warning ===\n");
-					pos += (size_t)snprintf(buf + pos, cap - pos,
+					if (pos == 0) mm_buf_appendf(&buf, &pos, &cap, "=== Proactive Context Drift Warning ===\n");
+					mm_buf_appendf(&buf, &pos, &cap,
 						"• [added] `%s` in %s (lines %d-%d)\n",
 						s->name, s->file_path, s->start_line, s->end_line);
 				}
@@ -2240,6 +2266,7 @@ int mm_swarm_query_leases(mm_ctx_t *ctx, const char *current_session_id,
 	size_t cap = 4096;
 	char *buf = (char *)malloc(cap);
 	size_t pos = 0;
+	buf[0] = '\0';
 
 	char line[1024];
 	while (fgets(line, sizeof(line), fp)) {
@@ -2274,10 +2301,10 @@ int mm_swarm_query_leases(mm_ctx_t *ctx, const char *current_session_id,
 
 		if (overlap) {
 			if (pos == 0) {
-				pos += (size_t)snprintf(buf + pos, cap - pos,
+				mm_buf_appendf(&buf, &pos, &cap,
 					"=== Swarm Stigmergy (Active Parallel Agent Leases) ===\n");
 			}
-			pos += (size_t)snprintf(buf + pos, cap - pos,
+			mm_buf_appendf(&buf, &pos, &cap,
 				"  • [%s] Session `%s` is %s `%s` (%s)\n",
 				overlap, sid, lmode, lsym, lfile);
 		}

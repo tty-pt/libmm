@@ -7,6 +7,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 #include <string.h>
 #include <ctype.h>
 #include <dirent.h>
@@ -19,6 +20,43 @@
 #define strtok_r strtok_s
 #endif
 #endif
+
+static void mm_buf_appendf(char **buf, size_t *pos, size_t *cap, const char *fmt, ...) {
+	if (!buf || !*buf || !pos || !cap) return;
+	for (;;) {
+		size_t avail = (*cap > *pos) ? (*cap - *pos) : 0;
+		va_list ap;
+		va_start(ap, fmt);
+		int n = vsnprintf(*buf + *pos, avail, fmt, ap);
+		va_end(ap);
+		if (n < 0) return;
+		if ((size_t)n < avail) {
+			*pos += (size_t)n;
+			return;
+		}
+		size_t new_cap = *cap ? *cap * 2 : 4096;
+		while (new_cap <= *pos + (size_t)n + 1) new_cap *= 2;
+		char *nb = (char *)realloc(*buf, new_cap);
+		if (!nb) {
+			if (avail > 0) *pos = *cap - 1;
+			return;
+		}
+		*buf = nb;
+		*cap = new_cap;
+	}
+}
+
+static void mm_fixed_appendf(char *buf, size_t *pos, size_t cap, const char *fmt, ...) {
+	if (!buf || !pos || *pos + 1 >= cap) return;
+	size_t avail = cap - *pos;
+	va_list ap;
+	va_start(ap, fmt);
+	int n = vsnprintf(buf + *pos, avail, fmt, ap);
+	va_end(ap);
+	if (n < 0) return;
+	if ((size_t)n >= avail) *pos = cap - 1;
+	else *pos += (size_t)n;
+}
 
 /* Forward declaration from mm_ctx.c */
 int mm_recall_persistent(mm_ctx_t *ctx, const mm_recall_req_t *req,
@@ -374,17 +412,13 @@ static void scan_session_dir(const char *sess_dir, const char *session_filter,
 			}
 
 			(*io_matches)++;
-			if (*pos + 2048 >= *cap) {
-				*cap *= 2;
-				*buf = (char *)realloc(*buf, *cap);
-			}
 
 			const char *badge = session_provenance_badge(r->sid, session_filter);
 
 			if (zoom_turn > 0) {
 				int s_l = line_start > 0 ? line_start : 1;
 				int e_l = line_end > 0 ? line_end : 9999;
-				*pos += (size_t)snprintf(*buf + *pos, *cap - *pos,
+				mm_buf_appendf(buf, pos, cap,
 					"=== %s Session %s · Turn %d (%s%s%s, lines %d-%d) ===\n",
 					badge,
 					r->sid[0] ? r->sid : ent->d_name,
@@ -399,8 +433,8 @@ static void scan_session_dir(const char *sess_dir, const char *session_filter,
 					const char *nl = strchr(lp, '\n');
 					size_t llen = nl ? (size_t)(nl - lp) : strlen(lp);
 					if (cur_l >= s_l && cur_l <= e_l) {
-						*pos += (size_t)snprintf(*buf + *pos, *cap - *pos, "%4d: %.*s\n",
-						                         cur_l, (int)llen, lp);
+						mm_buf_appendf(buf, pos, cap, "%4d: %.*s\n",
+						               cur_l, (int)llen, lp);
 					}
 					cur_l++;
 					if (!nl) break;
@@ -415,7 +449,7 @@ static void scan_session_dir(const char *sess_dir, const char *session_filter,
 				for (size_t k = 0; k < slen; k++) {
 					if (snippet[k] == '\n' || snippet[k] == '\r') snippet[k] = ' ';
 				}
-				*pos += (size_t)snprintf(*buf + *pos, *cap - *pos,
+				mm_buf_appendf(buf, pos, cap,
 					"%s [Session %s · Turn %d · %s%s%s]\n"
 					"  ├─ Summary: %s%s\n"
 					"  └─ Zoom: memory_recall({ scope: \"session\", session: \"%s\", zoomTurn: %d, lineRange: [1, 50] })\n",
@@ -441,7 +475,8 @@ int mm_session_recall_ex(mm_ctx_t *ctx, mm_tier_t tier, const char *session_id,
 
 	size_t cap = 4096;
 	char *buf = (char *)malloc(cap);
-	size_t pos = (size_t)snprintf(buf, cap, "=== Ephemeral Session Results ===\n");
+	size_t pos = 0;
+	mm_buf_appendf(&buf, &pos, &cap, "=== Ephemeral Session Results ===\n");
 	int matches = 0;
 
 	bool check_proj = mm_has_project_tier(ctx) &&
@@ -462,7 +497,7 @@ int mm_session_recall_ex(mm_ctx_t *ctx, mm_tier_t tier, const char *session_id,
 	}
 
 	if (matches == 0) {
-		pos += (size_t)snprintf(buf + pos, cap - pos, "No matching session turns found.\n");
+		mm_buf_appendf(&buf, &pos, &cap, "No matching session turns found.\n");
 	}
 	*out_buf = buf;
 	if (out_len) *out_len = pos;
@@ -537,7 +572,8 @@ int mm_session_compact(mm_ctx_t *ctx, mm_tier_t tier, const char *session_id,
 
 	size_t cap = 8192;
 	char *buf = (char *)malloc(cap);
-	size_t pos = (size_t)snprintf(buf, cap,
+	size_t pos = 0;
+	mm_buf_appendf(&buf, &pos, &cap,
 		"=== Mipmap Session Compaction Summary ===\n"
 		"[Session Goal]\n  %s\n\n"
 		"[L2 Epoch Summary]\n  Compacted %d event(s) across Turns %d..%d in session `%s`.\n\n"
@@ -556,7 +592,7 @@ int mm_session_compact(mm_ctx_t *ctx, mm_tier_t tier, const char *session_id,
 		sid);
 
 	if (custom_instructions && *custom_instructions) {
-		pos += (size_t)snprintf(buf + pos, cap - pos, "\n[Custom Compaction Focus]\n  %s\n", custom_instructions);
+		mm_buf_appendf(&buf, &pos, &cap, "\n[Custom Compaction Focus]\n  %s\n", custom_instructions);
 	}
 	free(reinf);
 
@@ -597,7 +633,7 @@ static void append_linked_lore_to_code(mm_ctx_t *ctx, const char *query_sym,
 		char *lore_buf = NULL;
 		if (mm_recall_persistent(ctx, &lreq, &lore_buf, NULL) == 0 && lore_buf) {
 			if (strstr(lore_buf, "[Ref ")) {
-				pos += (size_t)snprintf(*io_buf + pos, cap - pos,
+				mm_buf_appendf(io_buf, &pos, &cap,
 					"\n=== Linked Engineering Lore & Invariants ===\n%s", lore_buf);
 			}
 			free(lore_buf);
@@ -610,7 +646,7 @@ static void append_linked_lore_to_code(mm_ctx_t *ctx, const char *query_sym,
 		char *drift_buf = NULL;
 		if (mm_lore_verify_drift(ctx, drift_target, &drift_buf, NULL) == 0 && drift_buf) {
 			if (drift_buf[0]) {
-				pos += (size_t)snprintf(*io_buf + pos, cap - pos,
+				mm_buf_appendf(io_buf, &pos, &cap,
 					"=== AST-Bound Invariant Freshness ===\n%s", drift_buf);
 			}
 			free(drift_buf);
@@ -622,7 +658,7 @@ static void append_linked_lore_to_code(mm_ctx_t *ctx, const char *query_sym,
 		char *swarm_buf = NULL;
 		if (mm_swarm_query_leases(ctx, session_id, query_sym, file_path, &swarm_buf, NULL) == 0 && swarm_buf) {
 			if (swarm_buf[0]) {
-				pos += (size_t)snprintf(*io_buf + pos, cap - pos, "%s", swarm_buf);
+				mm_buf_appendf(io_buf, &pos, &cap, "%s", swarm_buf);
 			}
 			free(swarm_buf);
 		}
@@ -633,7 +669,7 @@ static void append_linked_lore_to_code(mm_ctx_t *ctx, const char *query_sym,
 		char *ctx_drift = NULL;
 		if (mm_context_check_drift(ctx, session_id, file_path, &ctx_drift, NULL) == 0 && ctx_drift) {
 			if (ctx_drift[0]) {
-				pos += (size_t)snprintf(*io_buf + pos, cap - pos,
+				mm_buf_appendf(io_buf, &pos, &cap,
 					"=== Working-Memory Context Staleness Alert ===\n%s", ctx_drift);
 			}
 			free(ctx_drift);
@@ -851,7 +887,8 @@ int mm_prime(mm_ctx_t *ctx, const char *prompt, char **out_buf, size_t *out_len)
 		free(global_rules);
 		return -1;
 	}
-	size_t pos = (size_t)snprintf(buf, cap,
+	size_t pos = 0;
+	mm_buf_appendf(&buf, &pos, &cap,
 		"<mm_priming intent=\"%s\" tier1=\"%s\" tier2=\"%s\">\n",
 		intent == MM_INTENT_DIRECTIVE ? "directive" :
 		intent == MM_INTENT_RECALL    ? "recall" :
@@ -861,16 +898,16 @@ int mm_prime(mm_ctx_t *ctx, const char *prompt, char **out_buf, size_t *out_len)
 		mm_has_project_tier(ctx) ? mm_get_tier_dir(ctx, MM_TIER_PROJECT) : "none");
 
 	if (intent == MM_INTENT_DIRECTIVE) {
-		pos += (size_t)snprintf(buf + pos, cap - pos,
+		mm_buf_appendf(&buf, &pos, &cap,
 			"• Standing Directive Detected: Persist via `mm record --standing \"<rule>\"` (or `memory_record({ standing: true, problem: \"...\" })`).\n");
 	} else if (intent == MM_INTENT_RECALL || intent == MM_INTENT_WONDERING) {
-		pos += (size_t)snprintf(buf + pos, cap - pos,
+		mm_buf_appendf(&buf, &pos, &cap,
 			"• Recall / Investigation Intent Detected: Prefer `mm recall` / `memory_recall` over grep.\n");
 	}
 	if (global_rules && global_len > 0) {
-		pos += (size_t)snprintf(buf + pos, cap - pos, "%s", global_rules);
+		mm_buf_appendf(&buf, &pos, &cap, "%s", global_rules);
 	}
-	pos += (size_t)snprintf(buf + pos, cap - pos, "</mm_priming>\n");
+	mm_buf_appendf(&buf, &pos, &cap, "</mm_priming>\n");
 	free(global_rules);
 
 	*out_buf = buf;
@@ -925,11 +962,9 @@ int mm_consolidate_drain(mm_ctx_t *ctx, mm_tier_t tier, int max_batch) {
 					continue;
 				}
 				l0_refs[n_l0++] = refs[i];
-				if (cpos + strlen(env.summary) + 8 < sizeof(combined_summary)) {
-					cpos += (size_t)snprintf(combined_summary + cpos, sizeof(combined_summary) - cpos,
-					                         "%s%s", (cpos > 0 ? "; " : "Consolidated L1 episode: "),
-					                         env.summary);
-				}
+				mm_fixed_appendf(combined_summary, &cpos, sizeof(combined_summary),
+				                 "%s%s", (cpos > 0 ? "; " : "Consolidated L1 episode: "),
+				                 env.summary);
 			}
 			mm_envelope_free(&env);
 		}
@@ -1065,11 +1100,12 @@ int mm_consolidate_scopes_and_principles(mm_ctx_t *ctx, mm_tier_t tier,
 		}
 
 		if (n_l1 >= 2 && !conflict) {
-			char l2_sum[2048];
-			size_t pos = (size_t)snprintf(l2_sum, sizeof(l2_sum), "Consolidated L2 subsystem invariant (%s): ",
-			                              group_sub[0] ? group_sub : (group_proj[0] ? group_proj : "general"));
+			char l2_sum[2048] = {0};
+			size_t pos = 0;
+			mm_fixed_appendf(l2_sum, &pos, sizeof(l2_sum), "Consolidated L2 subsystem invariant (%s): ",
+			                 group_sub[0] ? group_sub : (group_proj[0] ? group_proj : "general"));
 			for (size_t i = 0; i < n_l1; i++) {
-				pos += (size_t)snprintf(l2_sum + pos, sizeof(l2_sum) - pos, "%s%s", (i > 0 ? " | " : ""), l1_sums[i]);
+				mm_fixed_appendf(l2_sum, &pos, sizeof(l2_sum), "%s%s", (i > 0 ? " | " : ""), l1_sums[i]);
 			}
 			mm_record_req_t rreq;
 			memset(&rreq, 0, sizeof(rreq));
@@ -1120,10 +1156,11 @@ int mm_consolidate_scopes_and_principles(mm_ctx_t *ctx, mm_tier_t tier,
 			}
 		}
 		if (n_l2 >= 3) {
-			char l3_sum[2048];
-			size_t pos = (size_t)snprintf(l3_sum, sizeof(l3_sum), "Consolidated L3 architectural principle: ");
+			char l3_sum[2048] = {0};
+			size_t pos = 0;
+			mm_fixed_appendf(l3_sum, &pos, sizeof(l3_sum), "Consolidated L3 architectural principle: ");
 			for (size_t i = 0; i < n_l2; i++) {
-				pos += (size_t)snprintf(l3_sum + pos, sizeof(l3_sum) - pos, "%s%s", (i > 0 ? " | " : ""), l2_sums[i]);
+				mm_fixed_appendf(l3_sum, &pos, sizeof(l3_sum), "%s%s", (i > 0 ? " | " : ""), l2_sums[i]);
 			}
 			mm_record_req_t rreq;
 			memset(&rreq, 0, sizeof(rreq));
