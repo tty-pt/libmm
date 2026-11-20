@@ -460,15 +460,18 @@ int mm_filter_and_enrich(mm_candidate_t *candidates, size_t n_candidates,
 			if (env->lifecycle == MM_STATUS_SUPERSEDED) continue;
 		}
 
-		/* Project/subsystem filter (Tier 1 standing directives bypass repo filter!) */
+		/* Project/subsystem filter (Tier 1 standing directives without explicit subsystem bypass repo filter!) */
 		if (!env->standing && cand->tier != MM_TIER_GLOBAL) {
 			if (crit->project && crit->project[0] &&
 			    strcmp(env->ctx_project, crit->project) != 0) {
 				continue;
 			}
-			if (crit->subsystem && crit->subsystem[0] &&
-			    strcmp(env->ctx_subsystem, crit->subsystem) != 0) {
-				continue;
+		}
+		if (crit->subsystem && crit->subsystem[0]) {
+			if ((!env->standing && cand->tier != MM_TIER_GLOBAL) || env->ctx_subsystem[0]) {
+				if (strcmp(env->ctx_subsystem, crit->subsystem) != 0) {
+					continue;
+				}
 			}
 		}
 

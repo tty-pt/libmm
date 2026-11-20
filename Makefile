@@ -7,6 +7,9 @@ LDLIBS-libmm := -L../libcorm/lib -L../libstele/lib -lcorm -lstele -lm
 LDLIBS-mm := -L./lib -L../libcorm/lib -L../libstele/lib -lmm -lcorm -lstele -lm
 CFLAGS-BIN-Windows :=
 
+WASM_SRCS := npm/wasm/mm_wasm.c
+WASM_EXTRA_CFLAGS := -Iinclude -I../libcorm/include -I../libstele/include
+
 include ../mk/include.mk
 LDLIBS-alpine :=
 

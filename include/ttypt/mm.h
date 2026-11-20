@@ -409,9 +409,12 @@ typedef struct {
 	bool               include_evidence;
 	bool               dedupe;
 	bool               json_output;
+	const char        *subsystem;    /**< Optional ctx_subsystem filter (e.g. "jarvis") */
 } mm_recall_req_t;
 
 int mm_recall(mm_ctx_t *ctx, const mm_recall_req_t *req, char **out_buf, size_t *out_len);
+int mm_recall_candidates(mm_ctx_t *ctx, const mm_recall_req_t *req,
+                         mm_candidate_t **out_candidates, size_t *out_count);
 
 /* ============================================================================
  * 5. Pure-C Codebase Symbol & Call-Graph Engine (mm_code.c)

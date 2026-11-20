@@ -800,6 +800,16 @@ int mm_payload_encode(const mm_envelope_t *env,
 	}
 
 	if (out_bytes && out_len) {
+#ifdef __wasm__
+		uint8_t *copy = (uint8_t *)malloc(json_len + 1);
+		if (!copy) {
+			free(json_str);
+			return -1;
+		}
+		memcpy(copy, json_str, json_len + 1);
+		*out_bytes = copy;
+		*out_len = json_len;
+#else
 		uint8_t *htok_buf = NULL;
 		size_t htok_len = 0;
 		if (corm_htok_pack(json_str, json_len, &htok_buf, &htok_len) != 0 || !htok_buf) {
@@ -818,6 +828,7 @@ int mm_payload_encode(const mm_envelope_t *env,
 			*out_bytes = htok_buf;
 			*out_len = htok_len;
 		}
+#endif
 	}
 
 	if (out_json) {
@@ -866,6 +877,7 @@ int mm_payload_decode(const void *data, size_t len, mm_envelope_t *out_env) {
 				}
 			}
 		}
+#ifndef __wasm__
 		char *unpacked_json = NULL;
 		size_t unpacked_len = 0;
 		if (corm_htok_unpack(payload, plen, &unpacked_json, &unpacked_len) == 0 && unpacked_json) {
@@ -876,6 +888,7 @@ int mm_payload_decode(const void *data, size_t len, mm_envelope_t *out_env) {
 			}
 			return rc;
 		}
+#endif
 	}
 
 	return mm_envelope_from_json((const char *)bytes, len, out_env);

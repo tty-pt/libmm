@@ -17,7 +17,7 @@
 #include <limits.h>
 #include <libgen.h>
 #include <sys/stat.h>
-#ifndef _WIN32
+#if !defined(_WIN32) && !defined(__wasm__)
 #include <sys/wait.h>
 #include <sys/file.h>
 #include <sys/socket.h>
@@ -43,6 +43,22 @@ typedef struct {
 	bool   active;
 } mm_verif_fail_t;
 
+typedef struct {
+	uint32_t      ref;
+	mm_envelope_t env;
+	char         *folded_text;
+} mm_inmem_entry_t;
+
+typedef struct {
+	mm_inmem_entry_t *entries;
+	size_t            count;
+	size_t            cap;
+	uint32_t          next_ref;
+	time_t            loaded_mtime;
+	off_t             loaded_size;
+	bool              populated;
+} mm_inmem_tier_t;
+
 struct mm_ctx {
 	char              cwd[PATH_MAX];
 	char              global_dir[PATH_MAX];
@@ -65,6 +81,10 @@ struct mm_ctx {
 	size_t            n_verif_failures;
 	char              passed_cmds[16][256];
 	size_t            n_passed_cmds;
+
+	/* In-Process / WebAssembly Envelope Cache & Store */
+	mm_inmem_tier_t   inmem_global;
+	mm_inmem_tier_t   inmem_project;
 };
 
 static int mkdir_p(const char *path) {
@@ -253,6 +273,8 @@ static void discover_corm_and_axes(mm_ctx_t *ctx, const mm_options_t *opts) {
 	}
 }
 
+static void inmem_tier_load(mm_inmem_tier_t *st, const char *tdir);
+
 mm_ctx_t *mm_open(const mm_options_t *opts) {
 	mm_ctx_t *ctx = (mm_ctx_t *)calloc(1, sizeof(mm_ctx_t));
 	if (!ctx) return NULL;
@@ -326,12 +348,256 @@ mm_ctx_t *mm_open(const mm_options_t *opts) {
 	ctx->semantic_search = opts ? opts->semantic_search : false;
 	ctx->prefer_daemon   = opts ? opts->prefer_daemon : true;
 
+	inmem_tier_load(&ctx->inmem_global, ctx->global_dir);
+	if (ctx->has_project) {
+		inmem_tier_load(&ctx->inmem_project, ctx->project_dir);
+	}
+
 	mm_code_index_init(&ctx->code_index, ctx->project_root[0] ? ctx->project_root : ctx->cwd);
 	return ctx;
 }
 
+static void inmem_tier_free(mm_inmem_tier_t *st) {
+	if (!st) return;
+	for (size_t i = 0; i < st->count; i++) {
+		mm_envelope_free(&st->entries[i].env);
+		free(st->entries[i].folded_text);
+	}
+	free(st->entries);
+	memset(st, 0, sizeof(*st));
+}
+
+static mm_inmem_tier_t *get_inmem_tier(mm_ctx_t *ctx, mm_tier_t tier) {
+	if (!ctx) return NULL;
+	if (tier == MM_TIER_GLOBAL) return &ctx->inmem_global;
+	if (tier == MM_TIER_PROJECT) return ctx->has_project ? &ctx->inmem_project : NULL;
+	return ctx->has_project ? &ctx->inmem_project : &ctx->inmem_global;
+}
+
+static char fold_latin1_byte(unsigned char b2) {
+	if (b2 >= 0xA0) b2 -= 0x20; /* fold uppercase Latin-1 to lowercase range */
+	if (b2 >= 0x80 && b2 <= 0x86) return 'a';
+	if (b2 == 0x87) return 'c';
+	if (b2 >= 0x88 && b2 <= 0x8B) return 'e';
+	if (b2 >= 0x8C && b2 <= 0x8F) return 'i';
+	if (b2 == 0x91) return 'n';
+	if ((b2 >= 0x92 && b2 <= 0x96) || b2 == 0x98) return 'o';
+	if (b2 >= 0x99 && b2 <= 0x9C) return 'u';
+	if (b2 == 0x9D || b2 == 0x9F) return 'y';
+	return 0;
+}
+
+static char *mm_fold_search_text(const char *s) {
+	if (!s) return strdup("");
+	size_t len = strlen(s);
+	char *out = (char *)malloc(len + 1);
+	if (!out) return NULL;
+	size_t j = 0;
+	bool prev_sp = true;
+	const unsigned char *p = (const unsigned char *)s;
+	while (*p) {
+		if (p[0] == 0xC3 && p[1] >= 0x80 && p[1] <= 0xBF) {
+			char fc = fold_latin1_byte(p[1]);
+			if (fc) {
+				out[j++] = fc;
+				prev_sp = false;
+			}
+			p += 2;
+			continue;
+		}
+		if (isalnum(p[0]) || p[0] == '_') {
+			out[j++] = (char)tolower(p[0]);
+			prev_sp = false;
+		} else {
+			if (!prev_sp) {
+				out[j++] = ' ';
+				prev_sp = true;
+			}
+		}
+		p++;
+	}
+	while (j > 0 && out[j - 1] == ' ') j--;
+	out[j] = '\0';
+	return out;
+}
+
+static char *mm_build_envelope_folded_text(const mm_envelope_t *env) {
+	if (!env) return strdup("");
+	size_t cap = 2048;
+	if (env->summary) cap += strlen(env->summary);
+	if (env->ep_problem) cap += strlen(env->ep_problem);
+	if (env->ep_request) cap += strlen(env->ep_request);
+	if (env->ep_outcome) cap += strlen(env->ep_outcome);
+	char *raw = (char *)malloc(cap);
+	if (!raw) return strdup("");
+	size_t pos = 0;
+	pos += (size_t)snprintf(raw + pos, cap - pos, "%s %s %s %s %s %s ",
+		env->summary ? env->summary : "",
+		env->ep_problem ? env->ep_problem : "",
+		env->ep_request ? env->ep_request : "",
+		env->ep_outcome ? env->ep_outcome : "",
+		env->ctx_subsystem,
+		env->ctx_module);
+	for (size_t i = 0; i < env->n_tags && pos + 64 < cap; i++) {
+		pos += (size_t)snprintf(raw + pos, cap - pos, "%s ", env->tags[i] ? env->tags[i] : "");
+	}
+	char *folded = mm_fold_search_text(raw);
+	free(raw);
+	return folded ? folded : strdup("");
+}
+
+static void inmem_tier_sync_stat(mm_inmem_tier_t *st, const char *tdir) {
+	if (!st || !tdir) return;
+	char db_file[PATH_MAX];
+	snprintf(db_file, sizeof(db_file), "%s/mem.db", tdir);
+	struct stat sb;
+	if (stat(db_file, &sb) == 0) {
+		st->loaded_mtime = sb.st_mtime;
+		st->loaded_size  = sb.st_size;
+	}
+}
+
+static bool inmem_tier_is_fresh(const mm_inmem_tier_t *st, const char *tdir) {
+	if (!st || !st->populated) return false;
+#if defined(_WIN32) || defined(__wasm__)
+	(void)tdir;
+	return true;
+#else
+	if (!tdir || !*tdir) return true;
+	char db_file[PATH_MAX];
+	snprintf(db_file, sizeof(db_file), "%s/mem.db", tdir);
+	struct stat sb;
+	if (stat(db_file, &sb) != 0) {
+		return st->loaded_size == 0;
+	}
+	return sb.st_mtime == st->loaded_mtime && sb.st_size == st->loaded_size;
+#endif
+}
+
+static void inmem_tier_put(mm_inmem_tier_t *st, uint32_t ref, const mm_envelope_t *env) {
+	if (!st || !env || ref == 0) return;
+	if (ref >= st->next_ref) st->next_ref = ref;
+	for (size_t i = 0; i < st->count; i++) {
+		if (st->entries[i].ref == ref) {
+			mm_envelope_free(&st->entries[i].env);
+			free(st->entries[i].folded_text);
+			mm_envelope_clone(&st->entries[i].env, env);
+			st->entries[i].folded_text = mm_build_envelope_folded_text(env);
+			return;
+		}
+	}
+	if (st->count >= st->cap) {
+		size_t ncap = st->cap == 0 ? 32 : st->cap * 2;
+		mm_inmem_entry_t *ne = (mm_inmem_entry_t *)realloc(st->entries, ncap * sizeof(mm_inmem_entry_t));
+		if (!ne) return;
+		st->entries = ne;
+		st->cap = ncap;
+	}
+	mm_inmem_entry_t *e = &st->entries[st->count++];
+	e->ref = ref;
+	mm_envelope_clone(&e->env, env);
+	e->folded_text = mm_build_envelope_folded_text(env);
+}
+
+static bool inmem_tier_get(const mm_inmem_tier_t *st, uint32_t ref, mm_envelope_t *out_env) {
+	if (!st || !out_env || ref == 0) return false;
+	for (size_t i = 0; i < st->count; i++) {
+		if (st->entries[i].ref == ref) {
+			mm_envelope_clone(out_env, &st->entries[i].env);
+			return true;
+		}
+	}
+	return false;
+}
+
+static bool inmem_tier_del(mm_inmem_tier_t *st, uint32_t ref) {
+	if (!st || ref == 0) return false;
+	for (size_t i = 0; i < st->count; i++) {
+		if (st->entries[i].ref == ref) {
+			mm_envelope_free(&st->entries[i].env);
+			free(st->entries[i].folded_text);
+			if (i + 1 < st->count) {
+				memmove(&st->entries[i], &st->entries[i + 1], (st->count - i - 1) * sizeof(mm_inmem_entry_t));
+			}
+			st->count--;
+			return true;
+		}
+	}
+	return false;
+}
+
+static void inmem_tier_save(const mm_inmem_tier_t *st, const char *tdir) {
+#if defined(__wasm__)
+	(void)st;
+	(void)tdir;
+#else
+	if (!st || !tdir || !*tdir) return;
+	char path[PATH_MAX];
+	snprintf(path, sizeof(path), "%s/envelopes.jsonl", tdir);
+	FILE *fp = fopen(path, "w");
+	if (!fp) return;
+	for (size_t i = 0; i < st->count; i++) {
+		char *json = NULL;
+		size_t jlen = 0;
+		if (mm_envelope_to_json(&st->entries[i].env, &json, &jlen) != 0 || !json) continue;
+		for (size_t k = 0; k < jlen; k++) {
+			if (json[k] == '\n' || json[k] == '\r') json[k] = ' ';
+		}
+		fprintf(fp, "%u\t%s\n", st->entries[i].ref, json);
+		free(json);
+	}
+	fclose(fp);
+#endif
+}
+
+static void inmem_tier_load(mm_inmem_tier_t *st, const char *tdir) {
+#if defined(__wasm__)
+	(void)st;
+	(void)tdir;
+#else
+	if (!st || !tdir || !*tdir) return;
+	char path[PATH_MAX];
+	snprintf(path, sizeof(path), "%s/envelopes.jsonl", tdir);
+	struct stat sb_jsonl;
+	if (stat(path, &sb_jsonl) != 0) return;
+
+	char db_file[PATH_MAX];
+	snprintf(db_file, sizeof(db_file), "%s/mem.db", tdir);
+	struct stat sb_db;
+	bool has_newer_db = (stat(db_file, &sb_db) == 0 && sb_db.st_mtime > sb_jsonl.st_mtime);
+	if (has_newer_db) return;
+
+	FILE *fp = fopen(path, "r");
+	if (!fp) return;
+	char line[65536];
+	while (fgets(line, sizeof(line), fp)) {
+		char *tab = strchr(line, '\t');
+		if (!tab) continue;
+		*tab = '\0';
+		unsigned long ref_ul = strtoul(line, NULL, 10);
+		if (ref_ul == 0 || ref_ul >= UINT32_MAX) continue;
+		char *jstr = tab + 1;
+		size_t jlen = strlen(jstr);
+		while (jlen > 0 && (jstr[jlen - 1] == '\n' || jstr[jlen - 1] == '\r')) {
+			jstr[--jlen] = '\0';
+		}
+		if (jlen == 0) continue;
+		mm_envelope_t env;
+		if (mm_envelope_from_json(jstr, jlen, &env) == 0) {
+			inmem_tier_put(st, (uint32_t)ref_ul, &env);
+			mm_envelope_free(&env);
+		}
+	}
+	fclose(fp);
+	st->populated = true;
+	inmem_tier_sync_stat(st, tdir);
+#endif
+}
+
 void mm_close(mm_ctx_t *ctx) {
 	if (!ctx) return;
+	inmem_tier_free(&ctx->inmem_global);
+	inmem_tier_free(&ctx->inmem_project);
 	mm_code_index_free(&ctx->code_index);
 	free(ctx);
 }
@@ -362,6 +628,10 @@ bool mm_has_project_tier(const mm_ctx_t *ctx) {
  * ============================================================================ */
 
 static bool is_daemon_lock_held(const char *tier_dir) {
+#if defined(_WIN32) || defined(__wasm__)
+	(void)tier_dir;
+	return false;
+#else
 	char lock_path[PATH_MAX];
 	snprintf(lock_path, sizeof(lock_path), "%s/.cormd.lock", tier_dir);
 	int fd = open(lock_path, O_RDWR);
@@ -376,12 +646,13 @@ static bool is_daemon_lock_held(const char *tier_dir) {
 	}
 	close(fd);
 	return true;
+#endif
 }
 
 static int send_cormd_request(const char *sock_path, const char *header,
                               const void *body, size_t body_len,
                               char **out_stdout, size_t *out_len) {
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__wasm__)
 	(void)sock_path;
 	(void)header;
 	(void)body;
@@ -490,7 +761,7 @@ static int exec_corm_cli(mm_ctx_t *ctx, const char *tier_dir, bool is_mutation,
 		return -1; /* Fail closed: database is leased by resident cormd */
 	}
 
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__wasm__)
 	(void)ctx;
 	(void)tier_dir;
 	(void)argv;
@@ -542,7 +813,10 @@ static int exec_corm_cli(mm_ctx_t *ctx, const char *tier_dir, bool is_mutation,
 		if (ctx->axis_path[0]) {
 			stl_setenv("CORM_AXIS_PATH", ctx->axis_path, 1);
 			const char *old_ld = getenv("LD_LIBRARY_PATH");
-			char new_ld[PATH_MAX * 4];
+			const char *home = getenv("HOME");
+			char home_lib[PATH_MAX];
+			snprintf(home_lib, sizeof(home_lib), "%s/.local/lib", (home && *home) ? home : "/tmp");
+			char new_ld[PATH_MAX * 5];
 			char corm_lib[PATH_MAX];
 			char stele_lib[PATH_MAX];
 			snprintf(corm_lib, sizeof(corm_lib), "%s/external/libcorm/lib",
@@ -558,9 +832,9 @@ static int exec_corm_cli(mm_ctx_t *ctx, const char *tier_dir, bool is_mutation,
 				snprintf(stele_lib, sizeof(stele_lib), "%s/../libstele/lib", cdir);
 			}
 			if (old_ld && *old_ld) {
-				snprintf(new_ld, sizeof(new_ld), "%s:%s:%s:%s", corm_lib, stele_lib, ctx->axis_path, old_ld);
+				snprintf(new_ld, sizeof(new_ld), "%s:%s:%s:%s:%s", corm_lib, stele_lib, ctx->axis_path, home_lib, old_ld);
 			} else {
-				snprintf(new_ld, sizeof(new_ld), "%s:%s:%s", corm_lib, stele_lib, ctx->axis_path);
+				snprintf(new_ld, sizeof(new_ld), "%s:%s:%s:%s", corm_lib, stele_lib, ctx->axis_path, home_lib);
 			}
 			stl_setenv("LD_LIBRARY_PATH", new_ld, 1);
 			stl_setenv("DYLD_LIBRARY_PATH", new_ld, 1);
@@ -644,12 +918,32 @@ int mm_list_refs(mm_ctx_t *ctx, mm_tier_t tier, uint32_t **out_refs, size_t *out
 	*out_refs = NULL;
 	*out_count = 0;
 
+	mm_inmem_tier_t *st = get_inmem_tier(ctx, tier);
 	const char *tdir = mm_get_tier_dir(ctx, tier);
 	if (!tdir) return -1;
 
+	if (st && inmem_tier_is_fresh(st, tdir)) {
+		if (st->count == 0) return 0;
+		uint32_t *refs = (uint32_t *)malloc(st->count * sizeof(uint32_t));
+		if (!refs) return -1;
+		for (size_t i = 0; i < st->count; i++) refs[i] = st->entries[i].ref;
+		*out_refs = refs;
+		*out_count = st->count;
+		return 0;
+	}
+
 	char db_file[PATH_MAX];
 	snprintf(db_file, sizeof(db_file), "%s/mem.db", tdir);
-	if (!file_exists(db_file)) return 0;
+	if (!file_exists(db_file)) {
+		if (st && st->count > 0) {
+			uint32_t *refs = (uint32_t *)malloc(st->count * sizeof(uint32_t));
+			if (!refs) return -1;
+			for (size_t i = 0; i < st->count; i++) refs[i] = st->entries[i].ref;
+			*out_refs = refs;
+			*out_count = st->count;
+		}
+		return 0;
+	}
 
 	char fspec[128];
 	build_filespec(ctx, fspec, sizeof(fspec));
@@ -671,6 +965,13 @@ int mm_list_refs(mm_ctx_t *ctx, mm_tier_t tier, uint32_t **out_refs, size_t *out
 	}
 	if (rc != 0 || !stdout_buf) {
 		free(stdout_buf);
+		if (st && st->count > 0) {
+			uint32_t *refs = (uint32_t *)malloc(st->count * sizeof(uint32_t));
+			if (!refs) return -1;
+			for (size_t i = 0; i < st->count; i++) refs[i] = st->entries[i].ref;
+			*out_refs = refs;
+			*out_count = st->count;
+		}
 		return 0;
 	}
 
@@ -705,6 +1006,9 @@ uint32_t mm_next_ref(mm_ctx_t *ctx, mm_tier_t tier) {
 	if (!tdir) return 1;
 
 	uint32_t max_ref = 0;
+	mm_inmem_tier_t *st = get_inmem_tier(ctx, tier);
+	if (st && st->next_ref > max_ref) max_ref = st->next_ref;
+
 	uint32_t *refs = NULL;
 	size_t n_refs = 0;
 	if (mm_list_refs(ctx, tier, &refs, &n_refs) == 0 && refs) {
@@ -726,6 +1030,7 @@ uint32_t mm_next_ref(mm_ctx_t *ctx, mm_tier_t tier) {
 	}
 
 	uint32_t next = max_ref + 1;
+	if (st) st->next_ref = next;
 	fp = fopen(seq_path, "w");
 	if (fp) {
 		fprintf(fp, "%u\n", next);
@@ -739,6 +1044,11 @@ int mm_put_envelope(mm_ctx_t *ctx, mm_tier_t tier, uint32_t ref, const mm_envelo
 	const char *tdir = mm_get_tier_dir(ctx, tier);
 	if (!tdir) return -1;
 
+	mm_inmem_tier_t *st = get_inmem_tier(ctx, tier);
+	char db_file[PATH_MAX];
+	snprintf(db_file, sizeof(db_file), "%s/mem.db", tdir);
+	bool db_existed = file_exists(db_file);
+
 	uint8_t *payload_bytes = NULL;
 	size_t payload_len = 0;
 	char *payload_json = NULL;
@@ -751,6 +1061,9 @@ int mm_put_envelope(mm_ctx_t *ctx, mm_tier_t tier, uint32_t ref, const mm_envelo
 	build_filespec(ctx, fspec, sizeof(fspec));
 	int rc = -1;
 
+#if defined(_WIN32) || defined(__wasm__)
+	rc = 0;
+#else
 	if (ctx->prefer_daemon) {
 		char sock[PATH_MAX];
 		snprintf(sock, sizeof(sock), "%s/.cormd.sock", tdir);
@@ -764,6 +1077,18 @@ int mm_put_envelope(mm_ctx_t *ctx, mm_tier_t tier, uint32_t ref, const mm_envelo
 		char *argv[] = { ctx->corm_bin, (char *)"-p", ref_arg, fspec, NULL };
 		rc = exec_corm_cli(ctx, tdir, true, argv, payload_bytes, payload_len, NULL, NULL);
 	}
+	/* If corm CLI/daemon is unavailable in the environment, fall back to in-memory store */
+	if (rc != 0 && !is_daemon_lock_held(tdir) && !db_existed) {
+		rc = 0;
+	}
+#endif
+
+	if (rc == 0 && st) {
+		inmem_tier_put(st, ref, env);
+		if (!db_existed) st->populated = true;
+		inmem_tier_save(st, tdir);
+		inmem_tier_sync_stat(st, tdir);
+	}
 
 	free(payload_bytes);
 	free(payload_json);
@@ -774,9 +1099,18 @@ int mm_get_envelope(mm_ctx_t *ctx, mm_tier_t tier, uint32_t ref, mm_envelope_t *
 	if (!ctx || !out_env || ref == 0) return -1;
 	const char *tdir = mm_get_tier_dir(ctx, tier);
 	if (!tdir) return -1;
+
+	mm_inmem_tier_t *st = get_inmem_tier(ctx, tier);
+	if (st && inmem_tier_is_fresh(st, tdir)) {
+		return inmem_tier_get(st, ref, out_env) ? 0 : -1;
+	}
+
 	char db_file[PATH_MAX];
 	snprintf(db_file, sizeof(db_file), "%s/mem.db", tdir);
-	if (!file_exists(db_file)) return -1;
+	if (!file_exists(db_file)) {
+		if (st && inmem_tier_get(st, ref, out_env)) return 0;
+		return -1;
+	}
 
 	char fspec[128];
 	build_filespec(ctx, fspec, sizeof(fspec));
@@ -800,6 +1134,7 @@ int mm_get_envelope(mm_ctx_t *ctx, mm_tier_t tier, uint32_t ref, mm_envelope_t *
 	}
 	if (rc != 0 || !stdout_buf || stdout_len == 0) {
 		free(stdout_buf);
+		if (st && inmem_tier_get(st, ref, out_env)) return 0;
 		return -1;
 	}
 
@@ -817,6 +1152,9 @@ int mm_get_envelope(mm_ctx_t *ctx, mm_tier_t tier, uint32_t ref, mm_envelope_t *
 		mm_envelope_free(out_env);
 		return -1;
 	}
+	if (rc == 0 && st) {
+		inmem_tier_put(st, ref, out_env);
+	}
 	return rc;
 }
 
@@ -825,10 +1163,17 @@ int mm_forget(mm_ctx_t *ctx, mm_tier_t tier, uint32_t ref) {
 	const char *tdir = mm_get_tier_dir(ctx, tier);
 	if (!tdir) return -1;
 
+	mm_inmem_tier_t *st = get_inmem_tier(ctx, tier);
+	char db_file[PATH_MAX];
+	snprintf(db_file, sizeof(db_file), "%s/mem.db", tdir);
+
 	char fspec[128];
 	build_filespec(ctx, fspec, sizeof(fspec));
 	int rc = -1;
 
+#if defined(_WIN32) || defined(__wasm__)
+	rc = (st && inmem_tier_del(st, ref)) ? 0 : -1;
+#else
 	if (ctx->prefer_daemon) {
 		char sock[PATH_MAX];
 		snprintf(sock, sizeof(sock), "%s/.cormd.sock", tdir);
@@ -836,12 +1181,19 @@ int mm_forget(mm_ctx_t *ctx, mm_tier_t tier, uint32_t ref) {
 		snprintf(hdr, sizeof(hdr), "DEL %u %s %u 0", ++ctx->req_counter, fspec, ref);
 		rc = send_cormd_request(sock, hdr, NULL, 0, NULL, NULL);
 	}
-	if (rc != 0) {
+	if (rc != 0 && file_exists(db_file)) {
 		char ref_str[32];
 		snprintf(ref_str, sizeof(ref_str), "%u", ref);
 		char *argv[] = { ctx->corm_bin, (char *)"-d", ref_str, fspec, NULL };
 		rc = exec_corm_cli(ctx, tdir, true, argv, NULL, 0, NULL, NULL);
 	}
+	if (st) {
+		bool removed = inmem_tier_del(st, ref);
+		if (rc != 0 && removed && !file_exists(db_file)) rc = 0;
+		inmem_tier_save(st, tdir);
+		inmem_tier_sync_stat(st, tdir);
+	}
+#endif
 	return rc;
 }
 
@@ -1985,14 +2337,104 @@ static void parse_corm_query_lines(const char *stdout_buf, size_t stdout_len, mm
 	}
 }
 
+typedef struct {
+	uint32_t ref;
+	double   score;
+	size_t   idx;
+} mm_inmem_hit_t;
+
+static int cmp_inmem_hit_desc(const void *a, const void *b) {
+	const mm_inmem_hit_t *ha = (const mm_inmem_hit_t *)a;
+	const mm_inmem_hit_t *hb = (const mm_inmem_hit_t *)b;
+	if (hb->score > ha->score) return 1;
+	if (hb->score < ha->score) return -1;
+	if (ha->ref < hb->ref) return -1;
+	if (ha->ref > hb->ref) return 1;
+	return 0;
+}
+
+static bool query_tier_inmem_lemma(mm_ctx_t *ctx, mm_tier_t tier, const char *query, int limit,
+                                   mm_result_line_t **io_list, size_t *io_count, size_t *io_cap) {
+	mm_inmem_tier_t *st = get_inmem_tier(ctx, tier);
+	if (!st || st->count == 0) return false;
+
+	char *q_folded = mm_fold_search_text(query ? query : "");
+	if (!q_folded) return false;
+
+	char *q_tokens[32];
+	size_t n_qtok = 0;
+	char *saveptr = NULL;
+	for (char *tok = strtok_r(q_folded, " ", &saveptr); tok && n_qtok < 32; tok = strtok_r(NULL, " ", &saveptr)) {
+		if (*tok) q_tokens[n_qtok++] = tok;
+	}
+	if (n_qtok == 0) {
+		free(q_folded);
+		return false;
+	}
+
+	mm_inmem_hit_t *hits = (mm_inmem_hit_t *)calloc(st->count, sizeof(mm_inmem_hit_t));
+	if (!hits) {
+		free(q_folded);
+		return false;
+	}
+	size_t n_hits = 0;
+
+	for (size_t i = 0; i < st->count; i++) {
+		const char *ft = st->entries[i].folded_text ? st->entries[i].folded_text : "";
+		int matched = 0;
+		double score = 0.0;
+		for (size_t t = 0; t < n_qtok; t++) {
+			const char *qt = q_tokens[t];
+			size_t qlen = strlen(qt);
+			const char *found = strstr(ft, qt);
+			if (found) {
+				matched++;
+				bool left_b  = (found == ft || found[-1] == ' ');
+				bool right_b = (found[qlen] == '\0' || found[qlen] == ' ');
+				score += (left_b && right_b) ? 2.0 : 1.0;
+			}
+		}
+		if (matched > 0) {
+			hits[n_hits].ref   = st->entries[i].ref;
+			hits[n_hits].score = score / (double)n_qtok;
+			hits[n_hits].idx   = i;
+			n_hits++;
+		}
+	}
+	free(q_folded);
+
+	if (n_hits > 1) {
+		qsort(hits, n_hits, sizeof(mm_inmem_hit_t), cmp_inmem_hit_desc);
+	}
+	size_t max_take = (limit > 0 && (size_t)limit < n_hits) ? (size_t)limit : n_hits;
+	for (size_t i = 0; i < max_take; i++) {
+		char *json_str = NULL;
+		if (mm_envelope_to_json(&st->entries[hits[i].idx].env, &json_str, NULL) == 0 && json_str) {
+			if (*io_count >= *io_cap) {
+				*io_cap = (*io_cap == 0) ? 32 : (*io_cap * 2);
+				*io_list = (mm_result_line_t *)realloc(*io_list, (*io_cap) * sizeof(mm_result_line_t));
+			}
+			mm_result_line_t *item = &(*io_list)[(*io_count)++];
+			item->tier   = tier;
+			item->ref    = hits[i].ref;
+			item->score  = hits[i].score;
+			item->record = json_str;
+		}
+	}
+	free(hits);
+	return true;
+}
+
 static void query_tier_axis(mm_ctx_t *ctx, mm_tier_t tier, const char *axis_expr,
                             const char *query, int limit,
                             mm_result_line_t **io_list, size_t *io_count, size_t *io_cap) {
 	const char *tdir = mm_get_tier_dir(ctx, tier);
 	if (!tdir) return;
+	mm_inmem_tier_t *st = get_inmem_tier(ctx, tier);
 	char db_file[PATH_MAX];
 	snprintf(db_file, sizeof(db_file), "%s/mem.db", tdir);
-	if (!file_exists(db_file)) return;
+	bool has_db = file_exists(db_file);
+	if (!has_db && (!st || st->count == 0)) return;
 
 	if (!query || !*query) {
 		uint32_t *refs = NULL;
@@ -2020,6 +2462,13 @@ static void query_tier_axis(mm_ctx_t *ctx, mm_tier_t tier, const char *axis_expr
 		}
 		return;
 	}
+
+	if (strcmp(axis_expr, "lemma") == 0 && st && (!has_db || inmem_tier_is_fresh(st, tdir))) {
+		query_tier_inmem_lemma(ctx, tier, query, limit, io_list, io_count, io_cap);
+		return;
+	}
+
+	if (!has_db) return;
 
 	char fspec[128];
 	build_filespec(ctx, fspec, sizeof(fspec));
@@ -2061,7 +2510,7 @@ static void query_tier_axis(mm_ctx_t *ctx, mm_tier_t tier, const char *axis_expr
 		parse_corm_query_lines(stdout_buf, stdout_len, tier, io_list, io_count, io_cap);
 		for (size_t i = 0; i < *io_count; i++) {
 			mm_result_line_t *it = &(*io_list)[i];
-			if (it->tier == tier) {
+			if (it->tier == tier && (!it->record || !it->record[0])) {
 				mm_envelope_t full_env;
 				if (mm_get_envelope(ctx, tier, it->ref, &full_env) == 0) {
 					char *json_str = NULL;
@@ -2073,6 +2522,8 @@ static void query_tier_axis(mm_ctx_t *ctx, mm_tier_t tier, const char *axis_expr
 				}
 			}
 		}
+	} else if (strcmp(axis_expr, "lemma") == 0 && st && st->count > 0) {
+		query_tier_inmem_lemma(ctx, tier, query, limit, io_list, io_count, io_cap);
 	}
 	free(stdout_buf);
 }
@@ -2081,6 +2532,55 @@ static void free_result_lines(mm_result_line_t *list, size_t count) {
 	if (!list) return;
 	for (size_t i = 0; i < count; i++) free(list[i].record);
 	free(list);
+}
+
+int mm_recall_candidates(mm_ctx_t *ctx, const mm_recall_req_t *req,
+                         mm_candidate_t **out_candidates, size_t *out_count) {
+	if (!ctx || !req || !out_candidates || !out_count) return -1;
+	*out_candidates = NULL;
+	*out_count = 0;
+
+	bool query_global  = (req->tier == MM_TIER_AUTO || req->tier == MM_TIER_BOTH || req->tier == MM_TIER_GLOBAL || !ctx->has_project);
+	bool query_project = ctx->has_project && (req->tier == MM_TIER_AUTO || req->tier == MM_TIER_BOTH || req->tier == MM_TIER_PROJECT);
+
+	int scan_limit = (req->limit > 0 ? req->limit * 4 : 32);
+	mm_result_line_t *lex_list = NULL;
+	size_t lex_count = 0, lex_cap = 0;
+	mm_result_line_t *sem_list = NULL;
+	size_t sem_count = 0, sem_cap = 0;
+
+	if (query_project) {
+		query_tier_axis(ctx, MM_TIER_PROJECT, "lemma", req->query, scan_limit, &lex_list, &lex_count, &lex_cap);
+		if (ctx->semantic_search && req->query && *req->query) {
+			query_tier_axis(ctx, MM_TIER_PROJECT, "sepal", req->query, scan_limit, &sem_list, &sem_count, &sem_cap);
+		}
+	}
+	if (query_global) {
+		query_tier_axis(ctx, MM_TIER_GLOBAL, "lemma", req->query, scan_limit, &lex_list, &lex_count, &lex_cap);
+		if (ctx->semantic_search && req->query && *req->query) {
+			query_tier_axis(ctx, MM_TIER_GLOBAL, "sepal", req->query, scan_limit, &sem_list, &sem_count, &sem_cap);
+		}
+	}
+
+	mm_candidate_t *fused = NULL;
+	size_t n_fused = 0;
+	mm_fuse_rankings_rrf(lex_list, lex_count, sem_list, sem_count, 0, &fused, &n_fused);
+	free_result_lines(lex_list, lex_count);
+	free_result_lines(sem_list, sem_count);
+
+	mm_filter_criteria_t crit;
+	memset(&crit, 0, sizeof(crit));
+	crit.mipmap     = MM_LEVEL_NONE;
+	crit.query      = req->query;
+	crit.limit      = req->limit > 0 ? req->limit : 10;
+	crit.dedupe     = req->dedupe;
+	crit.include_l0 = req->include_l0;
+	crit.project    = ctx->has_project ? ctx->project_name : NULL;
+	crit.subsystem  = req->subsystem;
+
+	int rc = mm_filter_and_enrich(fused, n_fused, &crit, out_candidates, out_count);
+	mm_candidates_free(fused, n_fused);
+	return rc;
 }
 
 int mm_recall_persistent(mm_ctx_t *ctx, const mm_recall_req_t *req,
@@ -2168,47 +2668,11 @@ int mm_recall_persistent(mm_ctx_t *ctx, const mm_recall_req_t *req,
 		return 0;
 	}
 
-	bool query_global  = (req->tier == MM_TIER_AUTO || req->tier == MM_TIER_BOTH || req->tier == MM_TIER_GLOBAL || !ctx->has_project);
-	bool query_project = ctx->has_project && (req->tier == MM_TIER_AUTO || req->tier == MM_TIER_BOTH || req->tier == MM_TIER_PROJECT);
-
-	int scan_limit = (req->limit > 0 ? req->limit * 4 : 32);
-	mm_result_line_t *lex_list = NULL;
-	size_t lex_count = 0, lex_cap = 0;
-	mm_result_line_t *sem_list = NULL;
-	size_t sem_count = 0, sem_cap = 0;
-
-	if (query_project) {
-		query_tier_axis(ctx, MM_TIER_PROJECT, "lemma", req->query, scan_limit, &lex_list, &lex_count, &lex_cap);
-		if (ctx->semantic_search && req->query && *req->query) {
-			query_tier_axis(ctx, MM_TIER_PROJECT, "sepal", req->query, scan_limit, &sem_list, &sem_count, &sem_cap);
-		}
-	}
-	if (query_global) {
-		query_tier_axis(ctx, MM_TIER_GLOBAL, "lemma", req->query, scan_limit, &lex_list, &lex_count, &lex_cap);
-		if (ctx->semantic_search && req->query && *req->query) {
-			query_tier_axis(ctx, MM_TIER_GLOBAL, "sepal", req->query, scan_limit, &sem_list, &sem_count, &sem_cap);
-		}
-	}
-
-	mm_candidate_t *fused = NULL;
-	size_t n_fused = 0;
-	mm_fuse_rankings_rrf(lex_list, lex_count, sem_list, sem_count, 0, &fused, &n_fused);
-	free_result_lines(lex_list, lex_count);
-	free_result_lines(sem_list, sem_count);
-
-	mm_filter_criteria_t crit;
-	memset(&crit, 0, sizeof(crit));
-	crit.mipmap     = MM_LEVEL_NONE;
-	crit.query      = req->query;
-	crit.limit      = req->limit > 0 ? req->limit : 10;
-	crit.dedupe     = req->dedupe;
-	crit.include_l0 = req->include_l0;
-	crit.project    = ctx->has_project ? ctx->project_name : NULL;
-
 	mm_candidate_t *ranked = NULL;
 	size_t n_ranked = 0;
-	mm_filter_and_enrich(fused, n_fused, &crit, &ranked, &n_ranked);
-	mm_candidates_free(fused, n_fused);
+	if (mm_recall_candidates(ctx, req, &ranked, &n_ranked) != 0) {
+		return -1;
+	}
 
 	size_t cap = 4096 + n_ranked * 1536;
 	char *buf = (char *)malloc(cap);
