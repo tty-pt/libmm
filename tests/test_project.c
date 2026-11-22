@@ -4,7 +4,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <fcntl.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 int main(void) {
@@ -78,6 +80,19 @@ int main(void) {
 	buf = NULL; len = 0;
 	assert(mm_project_code_trace("myproj", "my_helper_fn", "inbound", 2, &buf, &len) == 0);
 	assert(buf && strstr(buf, "my_caller_fn"));
+	free(buf);
+
+	/* Manifest freshness check: add a new function with newer mtime */
+	fp = fopen(c_path, "a");
+	assert(fp);
+	fprintf(fp, "\nint my_new_fn(int z) { return z * 2; }\n");
+	fclose(fp);
+	struct timespec times[2] = { { 0, UTIME_NOW }, { time(NULL) + 2, 0 } };
+	assert(utimensat(AT_FDCWD, c_path, times, 0) == 0);
+
+	buf = NULL; len = 0;
+	assert(mm_project_code_search("myproj", "my_new_fn", NULL, NULL, 5, &buf, &len) == 0);
+	assert(buf && strstr(buf, "my_new_fn"));
 	free(buf);
 
 	printf("ok - test_project passed\n");

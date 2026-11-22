@@ -1428,6 +1428,97 @@ static napi_value NapiCodeFirstTouchDossier(napi_env env, napi_callback_info inf
 		napi_set_named_property(env, exports, name, v); \
 	} while (0)
 
+static void napi_copy_str(napi_env env, napi_value v, char *out, size_t cap) {
+	napi_valuetype vt;
+	if (napi_typeof(env, v, &vt) == napi_ok && vt == napi_string) {
+		size_t n = 0;
+		napi_get_value_string_utf8(env, v, out, cap, &n);
+	}
+}
+
+static napi_value NapiProjectCodeSearch(napi_env env, napi_callback_info info) {
+	size_t argc = 5;
+	napi_value args[5];
+	napi_get_cb_info(env, info, &argc, args, NULL, NULL);
+	char proj[128] = {0}, query[512] = {0}, file_f[256] = {0}, kind_f[64] = {0};
+	int32_t limit = 8;
+	if (argc >= 1) napi_copy_str(env, args[0], proj, sizeof(proj));
+	if (argc >= 2) napi_copy_str(env, args[1], query, sizeof(query));
+	if (argc >= 3) napi_copy_str(env, args[2], file_f, sizeof(file_f));
+	if (argc >= 4) napi_copy_str(env, args[3], kind_f, sizeof(kind_f));
+	if (argc >= 5) {
+		napi_valuetype vt;
+		if (napi_typeof(env, args[4], &vt) == napi_ok && vt == napi_number) {
+			napi_get_value_int32(env, args[4], &limit);
+		}
+	}
+	char *buf = NULL;
+	size_t len = 0;
+	int rc = mm_project_code_search(proj[0] ? proj : NULL, query,
+	                                file_f[0] ? file_f : NULL,
+	                                kind_f[0] ? kind_f : NULL,
+	                                limit, &buf, &len);
+	napi_value res;
+	if (rc == 0 && buf) {
+		napi_create_string_utf8(env, buf, len, &res);
+		free(buf);
+	} else {
+		napi_create_string_utf8(env, "", 0, &res);
+	}
+	return res;
+}
+
+static napi_value NapiProjectCodeSymbol(napi_env env, napi_callback_info info) {
+	size_t argc = 3;
+	napi_value args[3];
+	napi_get_cb_info(env, info, &argc, args, NULL, NULL);
+	char proj[128] = {0}, sym[256] = {0}, file_f[256] = {0};
+	if (argc >= 1) napi_copy_str(env, args[0], proj, sizeof(proj));
+	if (argc >= 2) napi_copy_str(env, args[1], sym, sizeof(sym));
+	if (argc >= 3) napi_copy_str(env, args[2], file_f, sizeof(file_f));
+	char *buf = NULL;
+	size_t len = 0;
+	int rc = mm_project_code_symbol(proj[0] ? proj : NULL, sym,
+	                                file_f[0] ? file_f : NULL, &buf, &len);
+	napi_value res;
+	if (rc == 0 && buf) {
+		napi_create_string_utf8(env, buf, len, &res);
+		free(buf);
+	} else {
+		napi_create_string_utf8(env, "", 0, &res);
+	}
+	return res;
+}
+
+static napi_value NapiProjectCodeTrace(napi_env env, napi_callback_info info) {
+	size_t argc = 4;
+	napi_value args[4];
+	napi_get_cb_info(env, info, &argc, args, NULL, NULL);
+	char proj[128] = {0}, sym[256] = {0}, dir[32] = "both";
+	int32_t depth = 2;
+	if (argc >= 1) napi_copy_str(env, args[0], proj, sizeof(proj));
+	if (argc >= 2) napi_copy_str(env, args[1], sym, sizeof(sym));
+	if (argc >= 3) napi_copy_str(env, args[2], dir, sizeof(dir));
+	if (argc >= 4) {
+		napi_valuetype vt;
+		if (napi_typeof(env, args[3], &vt) == napi_ok && vt == napi_number) {
+			napi_get_value_int32(env, args[3], &depth);
+		}
+	}
+	char *buf = NULL;
+	size_t len = 0;
+	int rc = mm_project_code_trace(proj[0] ? proj : NULL, sym,
+	                               dir[0] ? dir : "both", depth, &buf, &len);
+	napi_value res;
+	if (rc == 0 && buf) {
+		napi_create_string_utf8(env, buf, len, &res);
+		free(buf);
+	} else {
+		napi_create_string_utf8(env, "", 0, &res);
+	}
+	return res;
+}
+
 static napi_value Init(napi_env env, napi_value exports) {
 	/* Stateless algorithmic functions */
 	EXPORT_FN("adaptiveRrfK", NapiAdaptiveRrfK);
@@ -1470,6 +1561,11 @@ static napi_value Init(napi_env env, napi_value exports) {
 	EXPORT_FN("codeDetectXyMismatches", NapiCodeDetectXyMismatches);
 	EXPORT_FN("codeResolveCrossBoundary", NapiCodeResolveCrossBoundary);
 	EXPORT_FN("codeFirstTouchDossier", NapiCodeFirstTouchDossier);
+
+	/* Multi-project lazy discovery & code query */
+	EXPORT_FN("projectCodeSearch", NapiProjectCodeSearch);
+	EXPORT_FN("projectCodeSymbol", NapiProjectCodeSymbol);
+	EXPORT_FN("projectCodeTrace", NapiProjectCodeTrace);
 
 	return exports;
 }

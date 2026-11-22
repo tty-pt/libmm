@@ -221,10 +221,51 @@ int mm_project_resolve(const char *name_or_path, mm_project_info_t *out_info) {
 	return -1;
 }
 
+static bool is_source_ext(const char *name) {
+	const char *dot = strrchr(name, '.');
+	if (!dot) return false;
+	return strcmp(dot, ".c") == 0 || strcmp(dot, ".h") == 0 ||
+	       strcmp(dot, ".cc") == 0 || strcmp(dot, ".cpp") == 0 ||
+	       strcmp(dot, ".ts") == 0 || strcmp(dot, ".js") == 0 ||
+	       strcmp(dot, ".py") == 0;
+}
+
+static bool has_newer_file(const char *dir, time_t ref_mtime) {
+	DIR *d = opendir(dir);
+	if (!d) return false;
+	struct dirent *ent;
+	bool newer = false;
+	while (!newer && (ent = readdir(d)) != NULL) {
+		if (ent->d_name[0] == '.') continue;
+		if (strcmp(ent->d_name, "node_modules") == 0 ||
+		    strcmp(ent->d_name, "bin") == 0 ||
+		    strcmp(ent->d_name, "lib") == 0 ||
+		    strcmp(ent->d_name, "build") == 0) continue;
+		char path[1024];
+		snprintf(path, sizeof(path), "%s/%s", dir, ent->d_name);
+		struct stat st;
+		if (stat(path, &st) != 0) continue;
+		if (S_ISDIR(st.st_mode)) {
+			if (has_newer_file(path, ref_mtime)) newer = true;
+		} else if (S_ISREG(st.st_mode) && is_source_ext(ent->d_name)) {
+			if (st.st_mtime > ref_mtime) newer = true;
+		}
+	}
+	closedir(d);
+	return newer;
+}
+
+static bool is_manifest_fresh(const mm_project_info_t *proj) {
+	if (!proj->manifest_path[0]) return false;
+	struct stat st;
+	if (stat(proj->manifest_path, &st) != 0) return false;
+	return !has_newer_file(proj->root_path, st.st_mtime);
+}
+
 int mm_project_open_index(const mm_project_info_t *proj, mm_code_index_t *out_idx) {
 	if (!proj || !out_idx) return -1;
 	mm_code_index_init(out_idx, proj->root_path);
-	if (proj->manifest_path[0] && path_exists(proj->manifest_path)) {
+	if (is_manifest_fresh(proj)) {
 		if (mm_code_load_manifest(out_idx, proj->manifest_path) == 0 && out_idx->n_symbols > 0) {
 			return 0;
 		}
