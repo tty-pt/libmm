@@ -13,3 +13,4 @@ npm/node_modules/
 npm/prebuilds/
 npm/dist/*.node
 npm/*.tgz
+mods/ren-mm/ren-mm.so
