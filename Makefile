@@ -66,8 +66,8 @@ install: ${DESTDIR}${PREFIX}/lib/pkgconfig/mm.pc install-ren-mod
 
 install-ren-mod: mods/ren-mm/ren-mm.so
 	install -d ${DESTDIR}${PREFIX}/lib/ren
+	@rm -f ${DESTDIR}${PREFIX}/lib/ren/mod_mm.so ${DESTDIR}${PREFIX}/lib/mod_mm.so
 	install -m 755 mods/ren-mm/ren-mm.so ${DESTDIR}${PREFIX}/lib/ren/ren-mm.so
-	ln -sf ren-mm.so ${DESTDIR}${PREFIX}/lib/ren/mod_mm.so
 
 clean-extra::
 	rm -rf bin lib src/*.o src/*.d
