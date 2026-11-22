@@ -573,6 +573,32 @@ int         mm_consolidate_drain(mm_ctx_t *ctx, mm_tier_t tier, int max_batch);
 /** Run a native JSON-RPC 2.0 MCP server over stdin/stdout. */
 int         mm_mcp_serve_stdio(mm_ctx_t *ctx);
 
+/* ============================================================================
+ * 8. Multi-Project Registry, Lazy Discovery & Code Query (mm_project.c)
+ * ============================================================================ */
+
+typedef struct {
+	char     name[128];
+	char     root_path[512];
+	char     manifest_path[512];
+	uint64_t last_indexed;
+} mm_project_info_t;
+
+int mm_project_register(const char *name, const char *root_path);
+int mm_project_resolve(const char *name_or_path, mm_project_info_t *out_info);
+int mm_project_list(mm_project_info_t **out_list, size_t *out_count);
+int mm_project_open_index(const mm_project_info_t *proj, mm_code_index_t *out_idx);
+
+int mm_project_code_search(const char *project_or_null, const char *query,
+                           const char *file_filter, const char *kind_filter,
+                           int limit, char **out_buf, size_t *out_len);
+int mm_project_code_symbol(const char *project_or_null, const char *symbol_name,
+                           const char *file_filter,
+                           char **out_buf, size_t *out_len);
+int mm_project_code_trace(const char *project_or_null, const char *symbol_name,
+                          const char *direction, int depth,
+                          char **out_buf, size_t *out_len);
+
 #ifdef __cplusplus
 }
 #endif
