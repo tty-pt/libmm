@@ -156,6 +156,17 @@ Official Node.js and Browser WebAssembly bindings are colocated in [`npm/`](npm/
 
 👉 *For complete TypeScript usage, browser WASM guides, and API reference, see [npm/README.md](npm/README.md).*
 
+---
+
+## 6. Multi-Project Lazy Discovery & Zero-JSON Distillation
+
+- **Multi-Project Registry (`mm_project.c`)**:
+  - `mm_project_resolve(name_or_path, &info)`: Resolves registered projects from `~/.local/share/mm/projects.tsv`, explicit directories, or lazily probes `MM_PROJECT_ROOTS` (default: `$HOME:$HOME/site/external`).
+  - `mm_project_open_index(&proj, &idx)`: Loads cached manifests and automatically re-indexes when source file `mtime`s are newer than the manifest.
+  - `mm_project_code_search` / `mm_project_code_symbol` / `mm_project_code_trace`: Query a specific project or pass `NULL` to search across all registered projects, prefixing results with `[project]`.
+- **Zero-JSON Distillation (`mm_distill.c`)**:
+  - `mm_distill_prompt()`, `mm_distill_parse()`, `mm_distill_commit()`: Pure-C line-delimited key-value distillation (`PROBLEM:`, `TYPE:`, `APPROACH:`, `FINDING:`, `CONSTRAINT:`) with zero JSON parsing overhead.
+
 ## License
 
 BSD 2-Clause License — Copyright (c) 2026, Paulo André Azevedo Quirino. See [`LICENSE`](LICENSE).
