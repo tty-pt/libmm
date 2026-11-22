@@ -1519,6 +1519,172 @@ static napi_value NapiProjectCodeTrace(napi_env env, napi_callback_info info) {
 	return res;
 }
 
+static napi_value NapiDistillPrompt(napi_env env, napi_callback_info info) {
+	size_t argc = 1;
+	napi_value args[1];
+	napi_get_cb_info(env, info, &argc, args, NULL, NULL);
+	char text[16384] = {0};
+	if (argc >= 1) napi_copy_str(env, args[0], text, sizeof(text));
+	char *buf = NULL;
+	size_t len = 0;
+	int rc = mm_distill_prompt(text, &buf, &len);
+	napi_value res;
+	if (rc == 0 && buf) {
+		napi_create_string_utf8(env, buf, len, &res);
+		free(buf);
+	} else {
+		napi_create_string_utf8(env, "", 0, &res);
+	}
+	return res;
+}
+
+static napi_value NapiDistillCommit(napi_env env, napi_callback_info info) {
+	size_t argc = 2;
+	napi_value args[2];
+	napi_get_cb_info(env, info, &argc, args, NULL, NULL);
+	if (argc < 2) return NULL;
+	mm_ctx_t *ctx = unwrap_ctx(env, args[0]);
+	if (!ctx) return NULL;
+	char text[16384] = {0};
+	napi_copy_str(env, args[1], text, sizeof(text));
+
+	mm_tier_t tier = MM_TIER_PROJECT;
+	uint32_t ref = 0;
+	int rc = mm_distill_commit(ctx, text, &tier, &ref);
+
+	napi_value obj, v_rc, v_tier, v_ref;
+	napi_create_object(env, &obj);
+	napi_create_int32(env, rc, &v_rc);
+	napi_create_string_utf8(env, tier == MM_TIER_GLOBAL ? "global" : "project", NAPI_AUTO_LENGTH, &v_tier);
+	napi_create_uint32(env, ref, &v_ref);
+	napi_set_named_property(env, obj, "rc", v_rc);
+	napi_set_named_property(env, obj, "tier", v_tier);
+	napi_set_named_property(env, obj, "ref", v_ref);
+	return obj;
+}
+
+static napi_value NapiSessionIngestTurn(napi_env env, napi_callback_info info) {
+	size_t argc = 6;
+	napi_value args[6];
+	napi_get_cb_info(env, info, &argc, args, NULL, NULL);
+	if (argc < 5) return NULL;
+	mm_ctx_t *ctx = unwrap_ctx(env, args[0]);
+	if (!ctx) return NULL;
+
+	char tier_s[32] = {0}, sid[128] = {0}, role[32] = {0}, text[16384] = {0};
+	int32_t turn_idx = 0;
+	napi_copy_str(env, args[1], tier_s, sizeof(tier_s));
+	napi_copy_str(env, args[2], sid, sizeof(sid));
+	if (argc >= 4) {
+		napi_valuetype vt;
+		if (napi_typeof(env, args[3], &vt) == napi_ok && vt == napi_number) {
+			napi_get_value_int32(env, args[3], &turn_idx);
+		}
+	}
+	if (argc >= 5) napi_copy_str(env, args[4], role, sizeof(role));
+	if (argc >= 6) napi_copy_str(env, args[5], text, sizeof(text));
+
+	mm_tier_t tier = (strcmp(tier_s, "global") == 0) ? MM_TIER_GLOBAL : MM_TIER_PROJECT;
+	int rc = mm_session_ingest_turn(ctx, tier, sid, turn_idx, role, text);
+	napi_value v;
+	napi_create_int32(env, rc, &v);
+	return v;
+}
+
+static napi_value NapiSessionRecall(napi_env env, napi_callback_info info) {
+	size_t argc = 7;
+	napi_value args[7];
+	napi_get_cb_info(env, info, &argc, args, NULL, NULL);
+	if (argc < 2) return NULL;
+	mm_ctx_t *ctx = unwrap_ctx(env, args[0]);
+	if (!ctx) return NULL;
+
+	char tier_s[32] = "both", sid[128] = {0}, query[512] = {0};
+	int32_t zoom_turn = 0, line_start = 0, line_end = 0, limit = 5;
+	if (argc >= 2) napi_copy_str(env, args[1], tier_s, sizeof(tier_s));
+	if (argc >= 3) napi_copy_str(env, args[2], sid, sizeof(sid));
+	if (argc >= 4) napi_copy_str(env, args[3], query, sizeof(query));
+	if (argc >= 5) {
+		napi_valuetype vt;
+		if (napi_typeof(env, args[4], &vt) == napi_ok && vt == napi_number) {
+			napi_get_value_int32(env, args[4], &zoom_turn);
+		}
+	}
+	if (argc >= 6) {
+		napi_valuetype vt;
+		if (napi_typeof(env, args[5], &vt) == napi_ok && vt == napi_number) {
+			napi_get_value_int32(env, args[5], &line_start);
+		}
+	}
+	if (argc >= 7) {
+		napi_valuetype vt;
+		if (napi_typeof(env, args[6], &vt) == napi_ok && vt == napi_number) {
+			napi_get_value_int32(env, args[6], &line_end);
+		}
+	}
+
+	mm_tier_t tier = MM_TIER_BOTH;
+	if (strcmp(tier_s, "global") == 0) tier = MM_TIER_GLOBAL;
+	else if (strcmp(tier_s, "project") == 0) tier = MM_TIER_PROJECT;
+
+	char *buf = NULL;
+	size_t len = 0;
+	int rc = mm_session_recall(ctx, tier, sid[0] ? sid : NULL,
+	                           query[0] ? query : NULL,
+	                           zoom_turn, line_start, line_end, limit,
+	                           &buf, &len);
+	napi_value res;
+	if (rc == 0 && buf) {
+		napi_create_string_utf8(env, buf, len, &res);
+		free(buf);
+	} else {
+		napi_create_string_utf8(env, "", 0, &res);
+	}
+	return res;
+}
+
+static napi_value NapiTraverse(napi_env env, napi_callback_info info) {
+	size_t argc = 5;
+	napi_value args[5];
+	napi_get_cb_info(env, info, &argc, args, NULL, NULL);
+	if (argc < 3) return NULL;
+	mm_ctx_t *ctx = unwrap_ctx(env, args[0]);
+	if (!ctx) return NULL;
+
+	char tier_s[32] = "project", dir_s[32] = "both";
+	uint32_t start_ref = 0;
+	int32_t max_depth = 3;
+
+	if (argc >= 2) napi_copy_str(env, args[1], tier_s, sizeof(tier_s));
+	if (argc >= 3) {
+		napi_valuetype vt;
+		if (napi_typeof(env, args[2], &vt) == napi_ok && vt == napi_number) {
+			napi_get_value_uint32(env, args[2], &start_ref);
+		}
+	}
+	if (argc >= 4) napi_copy_str(env, args[3], dir_s, sizeof(dir_s));
+	if (argc >= 5) {
+		napi_valuetype vt;
+		if (napi_typeof(env, args[4], &vt) == napi_ok && vt == napi_number) {
+			napi_get_value_int32(env, args[4], &max_depth);
+		}
+	}
+
+	mm_tier_t tier = (strcmp(tier_s, "global") == 0) ? MM_TIER_GLOBAL : MM_TIER_PROJECT;
+	char *buf = NULL;
+	size_t len = 0;
+	int rc = mm_traverse(ctx, tier, start_ref, dir_s, max_depth, &buf, &len);
+
+	napi_value res;
+	if (rc == 0 && buf) {
+		napi_create_string_utf8(env, buf, len, &res);
+		free(buf);
+	} else {
+		napi_create_string_utf8(env, "", 0, &res);
+	}
+	return res;
+}
+
 static napi_value Init(napi_env env, napi_value exports) {
 	/* Stateless algorithmic functions */
 	EXPORT_FN("adaptiveRrfK", NapiAdaptiveRrfK);
@@ -1566,6 +1732,15 @@ static napi_value Init(napi_env env, napi_value exports) {
 	EXPORT_FN("projectCodeSearch", NapiProjectCodeSearch);
 	EXPORT_FN("projectCodeSymbol", NapiProjectCodeSymbol);
 	EXPORT_FN("projectCodeTrace", NapiProjectCodeTrace);
+
+	/* Zero-JSON session distillation */
+	EXPORT_FN("distillPrompt", NapiDistillPrompt);
+	EXPORT_FN("distillCommit", NapiDistillCommit);
+
+	/* Session & Traversal */
+	EXPORT_FN("sessionIngestTurn", NapiSessionIngestTurn);
+	EXPORT_FN("sessionRecall", NapiSessionRecall);
+	EXPORT_FN("traverse", NapiTraverse);
 
 	return exports;
 }

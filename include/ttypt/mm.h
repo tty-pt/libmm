@@ -599,6 +599,21 @@ int mm_project_code_trace(const char *project_or_null, const char *symbol_name,
                           const char *direction, int depth,
                           char **out_buf, size_t *out_len);
 
+/* ============================================================================
+ * 9. Zero-JSON Lightweight Session Distillation (mm_distill.c)
+ * ============================================================================ */
+
+/** Generate a compact prompt instructing an LLM to distill turns into line-delimited key-values. */
+int mm_distill_prompt(const char *conversation_text, char **out_prompt, size_t *out_len);
+
+/** Parse line-delimited key-values into an mm_record_req_t (zero JSON, pure C). */
+int mm_distill_parse(const char *distilled_text, mm_record_req_t *out_req,
+                     char *storage_buf, size_t storage_cap);
+
+/** Distill and commit directly into libmm (PROJECT tier, or GLOBAL if standing rule). */
+int mm_distill_commit(mm_ctx_t *ctx, const char *distilled_text,
+                      mm_tier_t *out_tier, uint32_t *out_ref);
+
 #ifdef __cplusplus
 }
 #endif
