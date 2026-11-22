@@ -45,6 +45,10 @@ bin/test_distill${EXE}: tests/test_distill.c lib/libmm.${SO}
 	@mkdir -p bin
 	${cc} ${CFLAGS} -o $@ tests/test_distill.c ${LDFLAGS} ${LDLIBS-mm}
 
+mods/ren-mm/ren-mm.so: mods/ren-mm/ren-mm.c lib/libmm.${SO}
+	@mkdir -p mods/ren-mm
+	${cc} ${CFLAGS} -I../axil-auren/include -I../libxylem/include -fPIC -shared -o $@ mods/ren-mm/ren-mm.c ${LDFLAGS} -L./lib -lmm -L../axil-auren/lib -lren -Wl,-rpath,'$$ORIGIN/../../lib'
+
 test: all ${TEST_BINS}
 	${TEST_ENV} ./bin/test_payload${EXE}
 	${TEST_ENV} ./bin/test_fusion${EXE}
@@ -58,7 +62,12 @@ ${DESTDIR}${PREFIX}/lib/pkgconfig/mm.pc: mm.pc
 	install -d ${DESTDIR}${PREFIX}/lib/pkgconfig
 	install -m 644 mm.pc $@
 
-install: ${DESTDIR}${PREFIX}/lib/pkgconfig/mm.pc
+install: ${DESTDIR}${PREFIX}/lib/pkgconfig/mm.pc install-ren-mod
+
+install-ren-mod: mods/ren-mm/ren-mm.so
+	install -d ${DESTDIR}${PREFIX}/lib/ren
+	install -m 755 mods/ren-mm/ren-mm.so ${DESTDIR}${PREFIX}/lib/ren/ren-mm.so
+	ln -sf ren-mm.so ${DESTDIR}${PREFIX}/lib/ren/mod_mm.so
 
 clean-extra::
 	rm -rf bin lib src/*.o src/*.d
