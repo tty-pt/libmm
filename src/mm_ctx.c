@@ -23,6 +23,7 @@
 #include <sys/file.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <dirent.h>
 #endif
 
 #ifdef _WIN32
@@ -114,6 +115,10 @@ struct mm_ctx {
 
 	/* Operational Metrics */
 	mm_metrics_t      metrics;
+
+	/* Multi-Process IPC Cache Invalidation */
+	int               ipc_fd;
+	char              ipc_path[PATH_MAX];
 };
 
 void mm_get_global_token_metrics(uint64_t *out_calls, uint64_t *out_failures);
@@ -128,6 +133,114 @@ static uint64_t mm_time_now_us(void) {
 	return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
 #endif
 }
+
+#if !defined(_WIN32) && !defined(__wasm__)
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <fcntl.h>
+
+#define MM_IPC_MAGIC 0x4D4D4950 /* "MMIP" */
+
+typedef struct {
+	uint32_t magic;
+	uint8_t  op;   /* 1: invalidate */
+	uint8_t  tier; /* 1: global, 2: project */
+	uint16_t reserved;
+	uint32_t ref;
+	uint64_t timestamp_us;
+} mm_ipc_msg_t;
+
+static void mm_ipc_init(mm_ctx_t *ctx) {
+	ctx->ipc_fd = -1;
+	ctx->ipc_path[0] = '\0';
+	int sfd = socket(AF_UNIX, SOCK_DGRAM, 0);
+	if (sfd < 0) return;
+
+	int flags = fcntl(sfd, F_GETFL, 0);
+	if (flags >= 0) fcntl(sfd, F_SETFL, flags | O_NONBLOCK);
+
+	struct sockaddr_un addr;
+	memset(&addr, 0, sizeof(addr));
+	addr.sun_family = AF_UNIX;
+	snprintf(addr.sun_path, sizeof(addr.sun_path), "/tmp/mm-ipc-%u-%d.sock", (unsigned)getuid(), (int)getpid());
+	unlink(addr.sun_path);
+
+	if (bind(sfd, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
+		ctx->ipc_fd = sfd;
+		snprintf(ctx->ipc_path, sizeof(ctx->ipc_path), "%s", addr.sun_path);
+	} else {
+		close(sfd);
+	}
+}
+
+static void mm_ipc_close(mm_ctx_t *ctx) {
+	if (ctx->ipc_fd >= 0) {
+		close(ctx->ipc_fd);
+		ctx->ipc_fd = -1;
+	}
+	if (ctx->ipc_path[0]) {
+		unlink(ctx->ipc_path);
+		ctx->ipc_path[0] = '\0';
+	}
+}
+
+static void mm_ipc_broadcast_invalidation(mm_ctx_t *ctx, mm_tier_t tier, uint32_t ref) {
+	if (ctx->ipc_fd < 0) return;
+
+	mm_ipc_msg_t msg;
+	memset(&msg, 0, sizeof(msg));
+	msg.magic = MM_IPC_MAGIC;
+	msg.op = 1; /* invalidate */
+	msg.tier = (uint8_t)tier;
+	msg.ref = ref;
+	msg.timestamp_us = mm_time_now_us();
+
+	DIR *dir = opendir("/tmp");
+	if (!dir) return;
+
+	char prefix[64];
+	snprintf(prefix, sizeof(prefix), "mm-ipc-%u-", (unsigned)getuid());
+	size_t plen = strlen(prefix);
+
+	struct dirent *de;
+	while ((de = readdir(dir)) != NULL) {
+		if (strncmp(de->d_name, prefix, plen) == 0 && strstr(de->d_name, ".sock")) {
+			char target[PATH_MAX];
+			snprintf(target, sizeof(target), "/tmp/%s", de->d_name);
+			if (strcmp(target, ctx->ipc_path) == 0) continue;
+
+			struct sockaddr_un to;
+			memset(&to, 0, sizeof(to));
+			to.sun_family = AF_UNIX;
+			snprintf(to.sun_path, sizeof(to.sun_path), "%s", target);
+
+			sendto(ctx->ipc_fd, &msg, sizeof(msg), MSG_DONTWAIT,
+			       (struct sockaddr *)&to, sizeof(to));
+		}
+	}
+	closedir(dir);
+}
+
+static void mm_ipc_drain_invalidations(mm_ctx_t *ctx) {
+	if (ctx->ipc_fd < 0) return;
+
+	mm_ipc_msg_t msg;
+	while (recvfrom(ctx->ipc_fd, &msg, sizeof(msg), MSG_DONTWAIT, NULL, NULL) == (ssize_t)sizeof(msg)) {
+		if (msg.magic == MM_IPC_MAGIC && msg.op == 1) {
+			if (msg.tier == MM_TIER_GLOBAL) {
+				ctx->inmem_global.populated = false;
+			} else if (msg.tier == MM_TIER_PROJECT) {
+				ctx->inmem_project.populated = false;
+			}
+		}
+	}
+}
+#else
+static void mm_ipc_init(mm_ctx_t *ctx) { (void)ctx; }
+static void mm_ipc_close(mm_ctx_t *ctx) { (void)ctx; }
+static void mm_ipc_broadcast_invalidation(mm_ctx_t *ctx, mm_tier_t tier, uint32_t ref) { (void)ctx; (void)tier; (void)ref; }
+static void mm_ipc_drain_invalidations(mm_ctx_t *ctx) { (void)ctx; }
+#endif
 
 static int mkdir_p(const char *path) {
 	if (!path || !*path) return -1;
@@ -172,6 +285,34 @@ static void now_iso_utc(char *out, size_t cap) {
 	struct tm tm_utc;
 	stl_gmtime_r(&now, &tm_utc);
 	strftime(out, cap, "%Y-%m-%dT%H:%M:%SZ", &tm_utc);
+}
+
+static void mm_log_telemetry_event(mm_ctx_t *ctx, const char *op, const char *extra_json) {
+#if !defined(_WIN32) && !defined(__wasm__)
+	const char *env = getenv("MM_TELEMETRY");
+	if (!env || !*env || !strcmp(env, "0")) return;
+
+	const char *tdir = ctx->has_project ? ctx->project_dir : ctx->global_dir;
+	if (!tdir || !*tdir) return;
+
+	char log_path[PATH_MAX];
+	snprintf(log_path, sizeof(log_path), "%s/metrics.jsonl", tdir);
+
+	FILE *fp = fopen(log_path, "a");
+	if (!fp) return;
+
+	char iso_ts[32];
+	now_iso_utc(iso_ts, sizeof(iso_ts));
+
+	fprintf(fp, "{\"ts\":\"%s\",\"op\":\"%s\"", iso_ts, op ? op : "op");
+	if (extra_json && *extra_json) {
+		fprintf(fp, ",%s", extra_json);
+	}
+	fprintf(fp, "}\n");
+	fclose(fp);
+#else
+	(void)ctx; (void)op; (void)extra_json;
+#endif
 }
 
 static void discover_repo_root(const char *start_cwd, char *root_out, size_t cap) {
@@ -455,6 +596,7 @@ mm_ctx_t *mm_open(const mm_options_t *opts) {
 	}
 
 	mm_code_index_init(&ctx->code_index, ctx->project_root[0] ? ctx->project_root : ctx->cwd);
+	mm_ipc_init(ctx);
 	return ctx;
 }
 
@@ -702,6 +844,7 @@ static void inmem_tier_load(mm_inmem_tier_t *st, const char *tdir) {
 
 void mm_close(mm_ctx_t *ctx) {
 	if (!ctx) return;
+	mm_ipc_close(ctx);
 	inmem_tier_free(&ctx->inmem_global);
 	inmem_tier_free(&ctx->inmem_project);
 	mm_code_index_free(&ctx->code_index);
@@ -1199,6 +1342,7 @@ int mm_put_envelope(mm_ctx_t *ctx, mm_tier_t tier, uint32_t ref, const mm_envelo
 		if (!db_existed) st->populated = true;
 		inmem_tier_save(st, tdir);
 		inmem_tier_sync_stat(st, tdir);
+		mm_ipc_broadcast_invalidation(ctx, tier, ref);
 	}
 
 	free(payload_bytes);
@@ -1208,6 +1352,7 @@ int mm_put_envelope(mm_ctx_t *ctx, mm_tier_t tier, uint32_t ref, const mm_envelo
 
 int mm_get_envelope(mm_ctx_t *ctx, mm_tier_t tier, uint32_t ref, mm_envelope_t *out_env) {
 	if (!ctx || !out_env || ref == 0) return -1;
+	mm_ipc_drain_invalidations(ctx);
 	const char *tdir = mm_get_tier_dir(ctx, tier);
 	if (!tdir) return -1;
 
@@ -1687,6 +1832,11 @@ int mm_record(mm_ctx_t *ctx, const mm_record_req_t *req,
 	uint64_t elapsed = (t1 >= t0) ? (t1 - t0) : 0;
 	ctx->metrics.last_record_us = elapsed;
 	ctx->metrics.record_latency_us += elapsed;
+
+	char log_extra[256];
+	snprintf(log_extra, sizeof(log_extra), "\"ref\":%u,\"tier\":\"%s\",\"us\":%lu",
+	         ref, target_tier == MM_TIER_GLOBAL ? "global" : "project", (unsigned long)elapsed);
+	mm_log_telemetry_event(ctx, "record", log_extra);
 
 	return 0;
 }
@@ -2568,6 +2718,7 @@ static bool query_tier_inmem_lemma(mm_ctx_t *ctx, mm_tier_t tier, const char *qu
 static void query_tier_axis(mm_ctx_t *ctx, mm_tier_t tier, const char *axis_expr,
                             const char *query, int limit,
                             mm_result_line_t **io_list, size_t *io_count, size_t *io_cap) {
+	mm_ipc_drain_invalidations(ctx);
 	const char *tdir = mm_get_tier_dir(ctx, tier);
 	if (!tdir) return;
 	mm_inmem_tier_t *st = get_inmem_tier(ctx, tier);
@@ -2737,6 +2888,11 @@ int mm_recall_candidates(mm_ctx_t *ctx, const mm_recall_req_t *req,
 	uint64_t elapsed = (t1 >= t0) ? (t1 - t0) : 0;
 	ctx->metrics.last_recall_us = elapsed;
 	ctx->metrics.recall_latency_us += elapsed;
+
+	char log_extra[256];
+	snprintf(log_extra, sizeof(log_extra), "\"matches\":%zu,\"us\":%lu",
+	         *out_count, (unsigned long)elapsed);
+	mm_log_telemetry_event(ctx, "recall", log_extra);
 
 	return rc;
 }

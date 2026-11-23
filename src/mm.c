@@ -84,7 +84,7 @@ int main(int argc, char **argv) {
 
 	if (!strcmp(cmd, "mcp") || !strcmp(cmd, "--mcp")) {
 		exit_code = mm_mcp_serve_stdio(ctx);
-	} else if (!strcmp(cmd, "status")) {
+	} else if (!strcmp(cmd, "status") || !strcmp(cmd, "metrics")) {
 		bool json = false;
 		for (int i = 2; i < argc; i++) {
 			if (!strcmp(argv[i], "--json")) json = true;

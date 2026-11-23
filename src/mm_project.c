@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
@@ -432,4 +433,172 @@ int mm_project_code_trace(const char *project_or_null, const char *symbol_name,
 	}
 	free(list);
 	return (*out_buf && *out_len > 0) ? 0 : -1;
+}
+
+static void mm_project_buf_appendf(char **buf, size_t *pos, size_t *cap, const char *fmt, ...) {
+	va_list ap;
+	va_start(ap, fmt);
+	va_list ap_copy;
+	va_copy(ap_copy, ap);
+	int needed = vsnprintf(NULL, 0, fmt, ap_copy);
+	va_end(ap_copy);
+	if (needed < 0) { va_end(ap); return; }
+	size_t req = *pos + (size_t)needed + 1;
+	if (req > *cap) {
+		size_t next_cap = (*cap == 0) ? 1024 : *cap;
+		while (next_cap < req) next_cap *= 2;
+		char *next = (char *)realloc(*buf, next_cap);
+		if (!next) { va_end(ap); return; }
+		*buf = next;
+		*cap = next_cap;
+	}
+	vsnprintf(*buf + *pos, *cap - *pos, fmt, ap);
+	va_end(ap);
+	*pos += (size_t)needed;
+}
+
+int mm_project_recall_all(const char *query, int limit, char **out_buf, size_t *out_len) {
+	if (!out_buf) return -1;
+	*out_buf = NULL;
+	if (out_len) *out_len = 0;
+	if (!query) query = "";
+	if (limit <= 0) limit = 10;
+
+	mm_project_info_t *list = NULL;
+	size_t count = 0;
+	mm_project_list(&list, &count);
+
+	size_t cap = 4096;
+	char *buf = (char *)malloc(cap);
+	if (!buf) {
+		free(list);
+		return -1;
+	}
+	buf[0] = '\0';
+	size_t pos = 0;
+
+	size_t total_matches = 0;
+	size_t contributing_projects = 0;
+
+	size_t body_cap = 16384;
+	char *body = (char *)malloc(body_cap);
+	if (!body) {
+		free(buf);
+		free(list);
+		return -1;
+	}
+	body[0] = '\0';
+	size_t bpos = 0;
+
+	for (size_t i = 0; i < count; i++) {
+		mm_options_t opts;
+		memset(&opts, 0, sizeof(opts));
+		opts.cwd = list[i].root_path;
+		opts.semantic_search = false;
+		opts.prefer_daemon = true;
+
+		mm_ctx_t *pctx = mm_open(&opts);
+		if (!pctx) continue;
+
+		mm_recall_req_t req;
+		memset(&req, 0, sizeof(req));
+		req.scope = MM_SCOPE_PERSISTENT;
+		req.query = query;
+		req.tier = MM_TIER_PROJECT;
+		req.limit = limit;
+
+		mm_candidate_t *cands = NULL;
+		size_t n_cands = 0;
+		if (mm_recall_candidates(pctx, &req, &cands, &n_cands) == 0 && n_cands > 0) {
+			contributing_projects++;
+			for (size_t c = 0; c < n_cands && total_matches < (size_t)limit; c++) {
+				total_matches++;
+				const mm_candidate_t *cand = &cands[c];
+				const mm_envelope_t *env = &cand->envelope;
+				mm_project_buf_appendf(&body, &bpos, &body_cap,
+					"[Ref %s:%u] (%s, %s [project:%s]): %s\n"
+					"  Origin: %s (score: %.6f)\n",
+					list[i].name,
+					cand->ref,
+					mm_level_to_str(env->level),
+					mm_status_to_str(env->lifecycle),
+					list[i].name,
+					env->summary ? env->summary : "",
+					mm_origin_to_str(cand->origin),
+					cand->ranking_score);
+			}
+			mm_candidates_free(cands, n_cands);
+		}
+		mm_close(pctx);
+	}
+	free(list);
+
+	/* Query Global Tier */
+	mm_options_t gopts;
+	memset(&gopts, 0, sizeof(gopts));
+	gopts.cwd = "/tmp";
+	gopts.semantic_search = false;
+	gopts.prefer_daemon = true;
+
+	mm_ctx_t *gctx = mm_open(&gopts);
+	if (gctx) {
+		mm_recall_req_t greq;
+		memset(&greq, 0, sizeof(greq));
+		greq.scope = MM_SCOPE_PERSISTENT;
+		greq.query = query;
+		greq.tier = MM_TIER_GLOBAL;
+		greq.limit = limit;
+
+		mm_candidate_t *gcands = NULL;
+		size_t n_gcands = 0;
+		if (mm_recall_candidates(gctx, &greq, &gcands, &n_gcands) == 0 && n_gcands > 0) {
+			for (size_t c = 0; c < n_gcands && total_matches < (size_t)limit; c++) {
+				total_matches++;
+				const mm_candidate_t *cand = &gcands[c];
+				const mm_envelope_t *env = &cand->envelope;
+				mm_project_buf_appendf(&body, &bpos, &body_cap,
+					"[Ref G:%u] (%s, %s [global]): %s\n"
+					"  Origin: %s (score: %.6f)\n",
+					cand->ref,
+					mm_level_to_str(env->level),
+					mm_status_to_str(env->lifecycle),
+					env->summary ? env->summary : "",
+					mm_origin_to_str(cand->origin),
+					cand->ranking_score);
+			}
+			mm_candidates_free(gcands, n_gcands);
+		}
+		mm_close(gctx);
+	}
+
+	if (total_matches == 0) {
+		free(body);
+		free(buf);
+		*out_buf = strdup("=== Federated Persistent Memory Results (0 matches) ===\n");
+		if (out_len) *out_len = strlen(*out_buf);
+		return 0;
+	}
+
+	mm_project_buf_appendf(&buf, &pos, &cap,
+		"=== Federated Persistent Memory Results (%zu match%s across %zu project%s) ===\n",
+		total_matches, total_matches == 1 ? "" : "es",
+		contributing_projects, contributing_projects == 1 ? "" : "s");
+
+	size_t final_len = pos + bpos + 1;
+	char *final_buf = (char *)malloc(final_len);
+	if (!final_buf) {
+		free(body);
+		free(buf);
+		return -1;
+	}
+	memcpy(final_buf, buf, pos);
+	memcpy(final_buf + pos, body, bpos);
+	final_buf[pos + bpos] = '\0';
+
+	free(buf);
+	free(body);
+
+	*out_buf = final_buf;
+	if (out_len) *out_len = pos + bpos;
+	return 0;
 }

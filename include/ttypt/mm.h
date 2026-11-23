@@ -599,6 +599,20 @@ int mm_project_code_trace(const char *project_or_null, const char *symbol_name,
                           const char *direction, int depth,
                           char **out_buf, size_t *out_len);
 
+/**
+ * @brief Recall persistent memories across all registered projects in projects.tsv.
+ *
+ * Queries each registered project's project tier, tags candidates with their project origin,
+ * and fuses all candidates with the global tier via RRF.
+ *
+ * @param query Search query text.
+ * @param limit Max total candidate count returned.
+ * @param out_buf Output buffer allocated with malloc (caller frees).
+ * @param out_len Optional output length.
+ * @return 0 on success, negative error code on failure.
+ */
+int mm_project_recall_all(const char *query, int limit, char **out_buf, size_t *out_len);
+
 /* ============================================================================
  * 9. Zero-JSON Lightweight Session Distillation (mm_distill.c)
  * ============================================================================ */

@@ -17,8 +17,8 @@ LDLIBS-alpine :=
 CFLAGS := -I./include -I../libcorm/include -I../libstele/include -O2 ${CFLAGS} $(EXTRA_CFLAGS)
 LDFLAGS := -L./lib -L../libcorm/lib -L../libstele/lib ${LDFLAGS}
 
-TEST_BINS := bin/test_payload${EXE} bin/test_fusion${EXE} bin/test_code${EXE} bin/test_tiers_cli_mcp${EXE} bin/test_project${EXE} bin/test_distill${EXE} bin/test_metrics${EXE} bin/test_token_decode${EXE} bin/test_ren_mm${EXE}
-TEST_LIB_PATH := ./lib:../libcorm/lib:../libstele/lib:../libjoint/lib:../liblemma/lib:../libsepal/lib:../libislet/lib:/opt/homebrew/lib:/usr/local/lib:/usr/lib
+TEST_BINS := bin/test_payload${EXE} bin/test_fusion${EXE} bin/test_code${EXE} bin/test_tiers_cli_mcp${EXE} bin/test_project${EXE} bin/test_distill${EXE} bin/test_metrics${EXE} bin/test_token_decode${EXE} bin/test_ren_mm${EXE} bin/test_federation${EXE} bin/test_ipc_invalidation${EXE} bin/test_telemetry${EXE}
+TEST_LIB_PATH := ./lib:../libcorm/lib:../libstele/lib:../libjoint/lib:../liblemma/lib:../libsepal/lib:../libislet/lib:../axil-auren/lib:/opt/homebrew/lib:/usr/local/lib:/usr/lib
 TEST_ENV := LD_LIBRARY_PATH=${TEST_LIB_PATH}:$$LD_LIBRARY_PATH DYLD_LIBRARY_PATH=${TEST_LIB_PATH}:$$DYLD_LIBRARY_PATH CORM_AXIS_PATH=../libjoint/lib:../liblemma/lib:../libsepal/lib:../libislet/lib:/opt/homebrew/lib:/usr/local/lib:/usr/lib
 
 bin/test_payload${EXE}: tests/test_payload.c lib/libmm.${SO}
@@ -57,6 +57,18 @@ bin/test_ren_mm${EXE}: tests/test_ren_mm.c mods/ren-mm/ren-mm.c lib/libmm.${SO}
 	@mkdir -p bin
 	${cc} ${CFLAGS} -I../axil-auren/include -I../libxylem/include -o $@ tests/test_ren_mm.c ${LDFLAGS} ${LDLIBS-mm} -L../axil-auren/lib -lren -L../liblemma/lib -llemma
 
+bin/test_federation${EXE}: tests/test_federation.c lib/libmm.${SO}
+	@mkdir -p bin
+	${cc} ${CFLAGS} -o $@ tests/test_federation.c ${LDFLAGS} ${LDLIBS-mm}
+
+bin/test_ipc_invalidation${EXE}: tests/test_ipc_invalidation.c lib/libmm.${SO}
+	@mkdir -p bin
+	${cc} ${CFLAGS} -o $@ tests/test_ipc_invalidation.c ${LDFLAGS} ${LDLIBS-mm}
+
+bin/test_telemetry${EXE}: tests/test_telemetry.c lib/libmm.${SO}
+	@mkdir -p bin
+	${cc} ${CFLAGS} -o $@ tests/test_telemetry.c ${LDFLAGS} ${LDLIBS-mm}
+
 mods/ren-mm/ren-mm.so: mods/ren-mm/ren-mm.c lib/libmm.${SO}
 	@mkdir -p mods/ren-mm
 	${cc} ${CFLAGS} -I../axil-auren/include -I../libxylem/include -fPIC -shared -o $@ mods/ren-mm/ren-mm.c ${LDFLAGS} -L./lib -lmm -L../axil-auren/lib -lren -Wl,-rpath,'$$ORIGIN/../../lib'
@@ -71,6 +83,9 @@ test: all ${TEST_BINS}
 	${TEST_ENV} ./bin/test_metrics${EXE}
 	${TEST_ENV} ./bin/test_token_decode${EXE}
 	${TEST_ENV} ./bin/test_ren_mm${EXE}
+	${TEST_ENV} ./bin/test_federation${EXE}
+	${TEST_ENV} ./bin/test_ipc_invalidation${EXE}
+	${TEST_ENV} ./bin/test_telemetry${EXE}
 	${TEST_ENV} sh ./tests/test_cli_mcp.sh
 
 bench: all bin/test_metrics${EXE}

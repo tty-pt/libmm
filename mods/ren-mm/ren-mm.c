@@ -98,6 +98,13 @@ static int do_recall(const char *args, char **out_result) {
         return 0;
     }
 
+    /* Check for explicit federated search "project:all <query>" */
+    if (proj && strcmp(proj, "all") == 0) {
+        rc = mm_project_recall_all(rest, 5, &buf, &len);
+        *out_result = (rc == 0 && buf) ? buf : strdup("No memories found across projects.");
+        return 0;
+    }
+
     mm_recall_req_t req;
     memset(&req, 0, sizeof(req));
     req.scope = MM_SCOPE_PERSISTENT;
@@ -122,6 +129,24 @@ static int do_recall(const char *args, char **out_result) {
 
     rc = mm_recall(query_ctx, &req, &buf, &len);
     if (custom_ctx) mm_close(custom_ctx);
+
+    /* Ambient Fallback: If no explicit project was requested and local search yields 0 matches,
+     * automatically federate across all registered projects in projects.tsv */
+    if ((!proj || !*proj) && (rc != 0 || !buf || strstr(buf, "(0 matches)") != NULL)) {
+        free(buf);
+        buf = NULL;
+        char *fed_buf = NULL;
+        size_t fed_len = 0;
+        if (mm_project_recall_all(rest, 5, &fed_buf, &fed_len) == 0 && fed_buf) {
+            if (strstr(fed_buf, "(0 matches)") == NULL) {
+                *out_result = fed_buf;
+                return 0;
+            }
+            free(fed_buf);
+        }
+        *out_result = strdup("No memories found.");
+        return 0;
+    }
 
     if (rc != 0 || !buf) {
         *out_result = strdup("No memories found.");
@@ -165,9 +190,10 @@ static int do_record(const char *args, char **out_result) {
     req.problem = problem;
     req.type = "episode";
     req.level = MM_LEVEL_L1;
+    const char *f_arr[1];
     if (findings) {
-        const char *f[1] = { findings };
-        req.findings = f;
+        f_arr[0] = findings;
+        req.findings = f_arr;
         req.n_findings = 1;
     }
 
