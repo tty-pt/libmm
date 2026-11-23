@@ -847,6 +847,56 @@ static bool has_htok_magic(const uint8_t *p, size_t rem) {
 	return false;
 }
 
+#ifndef __wasm__
+typedef int (*mm_lemma_tok_decode_fn)(const void *vocab, const uint16_t *tokens, size_t n_tokens,
+                                      char *dst, size_t dst_cap, size_t *bytes_written);
+
+static char *mm_try_decode_token_field(const uint8_t *bytes, size_t len) {
+	static void *s_lemma_handle = NULL;
+	static mm_lemma_tok_decode_fn s_decode_fn = NULL;
+	static int s_probed = 0;
+
+	if (!s_probed) {
+		s_probed = 1;
+		s_lemma_handle = stl_dlopen("liblemma.so", 0);
+		if (!s_lemma_handle) s_lemma_handle = stl_dlopen("/home/quirinpa/.local/lib/liblemma.so", 0);
+		if (!s_lemma_handle) s_lemma_handle = stl_dlopen("/usr/local/lib/liblemma.so", 0);
+		if (!s_lemma_handle) s_lemma_handle = stl_dlopen("/usr/lib/liblemma.so", 0);
+		if (s_lemma_handle) {
+			s_decode_fn = (mm_lemma_tok_decode_fn)stl_dlsym(s_lemma_handle, "lemma_tok_decode");
+		}
+	}
+	if (!s_decode_fn) return NULL;
+
+	uint16_t *tokens = (uint16_t *)malloc(len * sizeof(uint16_t));
+	if (!tokens) return NULL;
+	size_t n_tokens = 0;
+	size_t i = 0;
+	while (i < len) {
+		uint8_t b = bytes[i++];
+		if (!(b & 0x80)) {
+			tokens[n_tokens++] = (uint16_t)b;
+		} else {
+			if (i >= len) break;
+			uint8_t b2 = bytes[i++];
+			tokens[n_tokens++] = (uint16_t)((b & 0x7f) | (b2 << 7));
+		}
+	}
+
+	size_t cap = n_tokens * 32 + 64;
+	char *out = (char *)malloc(cap);
+	if (!out) { free(tokens); return NULL; }
+	size_t bw = 0;
+	if (s_decode_fn(NULL, tokens, n_tokens, out, cap, &bw) == 0 && bw > 0) {
+		free(tokens);
+		return out;
+	}
+	free(tokens);
+	free(out);
+	return NULL;
+}
+#endif
+
 int mm_payload_decode(const void *data, size_t len, mm_envelope_t *out_env) {
 	if (!data || !out_env) return -1;
 	const uint8_t *bytes = (const uint8_t *)data;
@@ -883,10 +933,75 @@ int mm_payload_decode(const void *data, size_t len, mm_envelope_t *out_env) {
 		if (corm_htok_unpack(payload, plen, &unpacked_json, &unpacked_len) == 0 && unpacked_json) {
 			int rc = mm_envelope_from_json(unpacked_json, unpacked_len, out_env);
 			free(unpacked_json);
-			if (rc == 0 && !out_env->timestamp[0] && date_hint[0]) {
-				snprintf(out_env->timestamp, sizeof(out_env->timestamp), "%sT00:00:00Z", date_hint);
+			if (rc == 0) {
+				if (!out_env->timestamp[0] && date_hint[0]) {
+					snprintf(out_env->timestamp, sizeof(out_env->timestamp), "%sT00:00:00Z", date_hint);
+				}
+				/* Direct token decoding for HTOK v4 token-packed fields */
+				size_t offset = 12;
+				uint8_t flags = payload[11];
+				if (flags & 0x01) { while (offset < plen && (payload[offset++] & 0x80)); }
+				if (flags & 0x02) { while (offset < plen && (payload[offset++] & 0x80)); }
+				if (flags & 0x04) {
+					uint64_t count = 0; size_t s = 0;
+					while (offset < plen) {
+						uint8_t b = payload[offset++];
+						count |= (uint64_t)(b & 0x7f) << s;
+						if (!(b & 0x80)) break;
+						s += 7;
+					}
+					for (size_t k = 0; k < count && offset < plen; k++) {
+						while (offset < plen && (payload[offset++] & 0x80));
+					}
+				}
+				uint64_t fc = 0; size_t s = 0;
+				while (offset < plen) {
+					uint8_t b = payload[offset++];
+					fc |= (uint64_t)(b & 0x7f) << s;
+					if (!(b & 0x80)) break;
+					s += 7;
+				}
+				for (size_t f = 0; f < fc && offset < plen; f++) {
+					uint8_t varTag = payload[offset++];
+					uint8_t typeTag = varTag & 0x07;
+					uint8_t fieldId = (varTag >> 3) & 0x1f;
+					if (fieldId == 31) {
+						if (offset >= plen) break;
+						uint8_t nlen = payload[offset++];
+						offset += nlen;
+					}
+					uint64_t dlen = 0; s = 0;
+					while (offset < plen) {
+						uint8_t b = payload[offset++];
+						dlen |= (uint64_t)(b & 0x7f) << s;
+						if (!(b & 0x80)) break;
+						s += 7;
+					}
+					if (typeTag == 1 && offset + dlen <= plen) {
+						if (fieldId == 0) { // summary
+							char *decoded = mm_try_decode_token_field(payload + offset, (size_t)dlen);
+							if (decoded) {
+								free(out_env->summary);
+								out_env->summary = decoded;
+							}
+						} else if (fieldId == 2) { // ctx_project
+							char *decoded = mm_try_decode_token_field(payload + offset, (size_t)dlen);
+							if (decoded) {
+								snprintf(out_env->ctx_project, sizeof(out_env->ctx_project), "%s", decoded);
+								free(decoded);
+							}
+						} else if (fieldId == 3) { // ctx_subsystem
+							char *decoded = mm_try_decode_token_field(payload + offset, (size_t)dlen);
+							if (decoded) {
+								snprintf(out_env->ctx_subsystem, sizeof(out_env->ctx_subsystem), "%s", decoded);
+								free(decoded);
+							}
+						}
+					}
+					offset += (size_t)dlen;
+				}
+				return 0;
 			}
-			return rc;
 		}
 #endif
 	}

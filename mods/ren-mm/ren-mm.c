@@ -101,10 +101,28 @@ static int do_recall(const char *args, char **out_result) {
     mm_recall_req_t req;
     memset(&req, 0, sizeof(req));
     req.scope = MM_SCOPE_PERSISTENT;
-    req.query = args;
+    req.query = rest;
+    req.tier = MM_TIER_BOTH;
     req.limit = 5;
 
-    rc = mm_recall(g_mm_ctx, &req, &buf, &len);
+    /* If explicit project was requested and it's not the current one, resolve it */
+    mm_ctx_t *query_ctx = g_mm_ctx;
+    mm_ctx_t *custom_ctx = NULL;
+    if (proj && *proj) {
+        mm_project_info_t pinfo;
+        if (mm_project_resolve(proj, &pinfo) == 0) {
+            mm_options_t popts;
+            memset(&popts, 0, sizeof(popts));
+            popts.cwd = pinfo.root_path;
+            popts.semantic_search = false;
+            custom_ctx = mm_open(&popts);
+            if (custom_ctx) query_ctx = custom_ctx;
+        }
+    }
+
+    rc = mm_recall(query_ctx, &req, &buf, &len);
+    if (custom_ctx) mm_close(custom_ctx);
+
     if (rc != 0 || !buf) {
         *out_result = strdup("No memories found.");
         return 0;

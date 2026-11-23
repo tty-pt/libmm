@@ -170,11 +170,13 @@ static void discover_repo_root(const char *start_cwd, char *root_out, size_t cap
 	}
 	while (cur[0] == '/' && cur[1] != '\0') {
 		char check_mm[PATH_MAX];
+		char check_pi_mm[PATH_MAX];
 		char check_git[PATH_MAX];
 		snprintf(check_mm, sizeof(check_mm), "%s/.mm", cur);
+		snprintf(check_pi_mm, sizeof(check_pi_mm), "%s/.pi/mm", cur);
 		snprintf(check_git, sizeof(check_git), "%s/.git", cur);
 		struct stat st;
-		if (stat(check_mm, &st) == 0 || stat(check_git, &st) == 0) {
+		if (stat(check_mm, &st) == 0 || stat(check_pi_mm, &st) == 0 || stat(check_git, &st) == 0) {
 			snprintf(root_out, cap, "%s", cur);
 			return;
 		}
@@ -383,7 +385,18 @@ mm_ctx_t *mm_open(const mm_options_t *opts) {
 			snprintf(ctx->project_root, sizeof(ctx->project_root), "%s", ctx->cwd);
 		}
 	} else if (ctx->project_root[0]) {
-		snprintf(ctx->project_dir, sizeof(ctx->project_dir), "%s/.mm", ctx->project_root);
+		char cand_mm[PATH_MAX];
+		char cand_pi_mm[PATH_MAX];
+		snprintf(cand_mm, sizeof(cand_mm), "%s/.mm", ctx->project_root);
+		snprintf(cand_pi_mm, sizeof(cand_pi_mm), "%s/.pi/mm", ctx->project_root);
+		struct stat st;
+		if (stat(cand_mm, &st) == 0) {
+			snprintf(ctx->project_dir, sizeof(ctx->project_dir), "%s", cand_mm);
+		} else if (stat(cand_pi_mm, &st) == 0) {
+			snprintf(ctx->project_dir, sizeof(ctx->project_dir), "%s", cand_pi_mm);
+		} else {
+			snprintf(ctx->project_dir, sizeof(ctx->project_dir), "%s/.mm", ctx->project_root);
+		}
 		ctx->has_project = true;
 	}
 
