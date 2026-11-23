@@ -10,6 +10,24 @@
  * 1. Heuristic Classifiers & Noise Filters (matches pi-mm ranking.ts)
  * ============================================================================ */
 
+#ifdef __wasm__
+void mm_record_fusion_duplicate(void) {}
+#else
+static uint64_t g_duplicates_pruned = 0;
+
+void mm_record_fusion_duplicate(void) {
+	g_duplicates_pruned++;
+}
+
+uint64_t mm_get_fusion_duplicates_pruned(void) {
+	return g_duplicates_pruned;
+}
+
+void mm_reset_fusion_duplicates(void) {
+	g_duplicates_pruned = 0;
+}
+#endif
+
 int mm_adaptive_rrf_k(size_t candidate_count) {
 	if (candidate_count <= 1) return 10;
 	size_t scaled = candidate_count * 2;
@@ -22,17 +40,28 @@ bool mm_is_clean_summary_text(const char *summary) {
 	if (!summary) return false;
 	while (*summary && isspace((unsigned char)*summary)) summary++;
 	if (!*summary) return false;
+	if (strncmp(summary, "[Corrupted payload", 18) == 0) return false;
 
 	size_t total = 0;
 	size_t printable = 0;
+	size_t suspicious_high = 0;
 	for (const unsigned char *p = (const unsigned char *)summary; *p; p++) {
 		total++;
-		if (*p >= 0x20 || *p == '\n' || *p == '\r' || *p == '\t') {
+		if (*p >= 0x20 && *p < 0x7F) {
 			printable++;
+		} else if (*p == '\n' || *p == '\r' || *p == '\t') {
+			printable++;
+		} else if (*p >= 0xC0 && *p <= 0xF4) {
+			/* UTF-8 lead byte */
+			printable++;
+		} else if (*p >= 0x80 && *p <= 0xBF) {
+			/* UTF-8 continuation or lone high byte */
+			suspicious_high++;
 		}
 	}
 	if (total == 0) return false;
-	return ((double)printable / (double)total) >= 0.90;
+	if (total > 4 && ((double)suspicious_high / (double)total) > 0.35) return false;
+	return ((double)printable / (double)total) >= 0.70;
 }
 
 static bool starts_with_ci(const char *s, const char *prefix) {
@@ -541,6 +570,7 @@ int mm_filter_and_enrich(mm_candidate_t *candidates, size_t n_candidates,
 				}
 			}
 			if (dup) {
+				mm_record_fusion_duplicate();
 				free(filtered[i].record);
 				if (filtered[i].has_envelope) mm_envelope_free(&filtered[i].envelope);
 			} else {

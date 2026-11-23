@@ -848,10 +848,24 @@ static bool has_htok_magic(const uint8_t *p, size_t rem) {
 }
 
 #ifndef __wasm__
+static uint64_t g_token_decode_calls = 0;
+static uint64_t g_token_decode_failures = 0;
+
+void mm_get_global_token_metrics(uint64_t *out_calls, uint64_t *out_failures) {
+	if (out_calls) *out_calls = g_token_decode_calls;
+	if (out_failures) *out_failures = g_token_decode_failures;
+}
+
+void mm_reset_global_token_metrics(void) {
+	g_token_decode_calls = 0;
+	g_token_decode_failures = 0;
+}
+
 typedef int (*mm_lemma_tok_decode_fn)(const void *vocab, const uint16_t *tokens, size_t n_tokens,
                                       char *dst, size_t dst_cap, size_t *bytes_written);
 
 static char *mm_try_decode_token_field(const uint8_t *bytes, size_t len) {
+	g_token_decode_calls++;
 	static void *s_lemma_handle = NULL;
 	static mm_lemma_tok_decode_fn s_decode_fn = NULL;
 	static int s_probed = 0;
@@ -866,10 +880,16 @@ static char *mm_try_decode_token_field(const uint8_t *bytes, size_t len) {
 			s_decode_fn = (mm_lemma_tok_decode_fn)stl_dlsym(s_lemma_handle, "lemma_tok_decode");
 		}
 	}
-	if (!s_decode_fn) return NULL;
+	if (!s_decode_fn) {
+		g_token_decode_failures++;
+		return NULL;
+	}
 
 	uint16_t *tokens = (uint16_t *)malloc(len * sizeof(uint16_t));
-	if (!tokens) return NULL;
+	if (!tokens) {
+		g_token_decode_failures++;
+		return NULL;
+	}
 	size_t n_tokens = 0;
 	size_t i = 0;
 	while (i < len) {
@@ -885,7 +905,11 @@ static char *mm_try_decode_token_field(const uint8_t *bytes, size_t len) {
 
 	size_t cap = n_tokens * 32 + 64;
 	char *out = (char *)malloc(cap);
-	if (!out) { free(tokens); return NULL; }
+	if (!out) {
+		free(tokens);
+		g_token_decode_failures++;
+		return NULL;
+	}
 	size_t bw = 0;
 	if (s_decode_fn(NULL, tokens, n_tokens, out, cap, &bw) == 0 && bw > 0) {
 		free(tokens);
@@ -893,8 +917,15 @@ static char *mm_try_decode_token_field(const uint8_t *bytes, size_t len) {
 	}
 	free(tokens);
 	free(out);
+	g_token_decode_failures++;
 	return NULL;
 }
+#else
+void mm_get_global_token_metrics(uint64_t *out_calls, uint64_t *out_failures) {
+	if (out_calls) *out_calls = 0;
+	if (out_failures) *out_failures = 0;
+}
+void mm_reset_global_token_metrics(void) {}
 #endif
 
 int mm_payload_decode(const void *data, size_t len, mm_envelope_t *out_env) {

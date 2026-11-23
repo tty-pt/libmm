@@ -111,7 +111,23 @@ struct mm_ctx {
 	/* In-Process / WebAssembly Envelope Cache & Store */
 	mm_inmem_tier_t   inmem_global;
 	mm_inmem_tier_t   inmem_project;
+
+	/* Operational Metrics */
+	mm_metrics_t      metrics;
 };
+
+void mm_get_global_token_metrics(uint64_t *out_calls, uint64_t *out_failures);
+void mm_reset_global_token_metrics(void);
+
+static uint64_t mm_time_now_us(void) {
+#if defined(_WIN32) || defined(__wasm__)
+	return 0;
+#else
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
+#endif
+}
 
 static int mkdir_p(const char *path) {
 	if (!path || !*path) return -1;
@@ -1539,6 +1555,8 @@ int mm_synthesize_reinforcement(mm_ctx_t *ctx, const char *reason,
 int mm_record(mm_ctx_t *ctx, const mm_record_req_t *req,
               mm_tier_t *out_tier, uint32_t *out_ref) {
 	if (!ctx || !req || !req->problem || !req->problem[0]) return -1;
+	uint64_t t0 = mm_time_now_us();
+	ctx->metrics.total_records++;
 
 	mm_tier_t target_tier = req->tier;
 	if (target_tier == MM_TIER_AUTO || target_tier == MM_TIER_BOTH) {
@@ -1664,6 +1682,12 @@ int mm_record(mm_ctx_t *ctx, const mm_record_req_t *req,
 
 	if (out_tier) *out_tier = target_tier;
 	if (out_ref)  *out_ref  = ref;
+
+	uint64_t t1 = mm_time_now_us();
+	uint64_t elapsed = (t1 >= t0) ? (t1 - t0) : 0;
+	ctx->metrics.last_record_us = elapsed;
+	ctx->metrics.record_latency_us += elapsed;
+
 	return 0;
 }
 
@@ -1934,6 +1958,7 @@ int mm_traverse(mm_ctx_t *ctx, mm_tier_t tier, uint32_t start_ref,
 
 int mm_review_ex(mm_ctx_t *ctx, const mm_review_req_t *req, char **out_buf, size_t *out_len) {
 	if (!ctx || !req || req->ref == 0 || !req->action) return -1;
+	ctx->metrics.total_reviews++;
 	mm_tier_t tier = (req->tier == MM_TIER_GLOBAL) ? MM_TIER_GLOBAL :
 	                 (ctx->has_project ? MM_TIER_PROJECT : MM_TIER_GLOBAL);
 
@@ -2306,6 +2331,7 @@ int mm_evaluate_guardrail(mm_ctx_t *ctx, const char *intent_text,
                           const char *file_path, const char *symbol_name,
                           char **out_buf, size_t *out_len) {
 	if (!ctx || !out_buf) return -1;
+	ctx->metrics.total_guardrail_checks++;
 
 	mm_loaded_rec_t *recs = NULL;
 	size_t n_recs = 0, cap_recs = 0;
@@ -2394,6 +2420,8 @@ int mm_evaluate_guardrail(mm_ctx_t *ctx, const char *intent_text,
 		mm_envelope_free(&recs[i].env);
 	}
 	free(recs);
+
+	ctx->metrics.guardrail_warnings += (uint64_t)warnings;
 
 	if (warnings == 0) {
 		mm_buf_appendf(&buf, &pos, &cap, "No counterfactual guardrail warnings triggered.\n");
@@ -2576,6 +2604,7 @@ static void query_tier_axis(mm_ctx_t *ctx, mm_tier_t tier, const char *axis_expr
 	}
 
 	if (strcmp(axis_expr, "lemma") == 0 && st && (!has_db || inmem_tier_is_fresh(st, tdir))) {
+		ctx->metrics.inmem_hits++;
 		query_tier_inmem_lemma(ctx, tier, query, limit, io_list, io_count, io_cap);
 		return;
 	}
@@ -2602,6 +2631,7 @@ static void query_tier_axis(mm_ctx_t *ctx, mm_tier_t tier, const char *axis_expr
 		char hdr[256];
 		snprintf(hdr, sizeof(hdr), "QUERY %u %s %s %d", ++ctx->req_counter, fspec, lim_str, blen);
 		rc = send_cormd_request(sock, hdr, body, (size_t)blen, &stdout_buf, &stdout_len);
+		if (rc == 0) ctx->metrics.cormd_requests++;
 	}
 	if (rc != 0) {
 		char *argv[] = {
@@ -2616,6 +2646,7 @@ static void query_tier_axis(mm_ctx_t *ctx, mm_tier_t tier, const char *axis_expr
 			NULL
 		};
 		rc = exec_corm_cli(ctx, tdir, false, argv, NULL, 0, &stdout_buf, &stdout_len);
+		if (rc == 0) ctx->metrics.cli_invocations++;
 	}
 
 	if (rc == 0 && stdout_buf) {
@@ -2652,6 +2683,9 @@ int mm_recall_candidates(mm_ctx_t *ctx, const mm_recall_req_t *req,
 	*out_candidates = NULL;
 	*out_count = 0;
 
+	uint64_t t0 = mm_time_now_us();
+	ctx->metrics.total_recalls++;
+
 	bool query_global  = (req->tier == MM_TIER_AUTO || req->tier == MM_TIER_BOTH || req->tier == MM_TIER_GLOBAL || !ctx->has_project);
 	bool query_project = ctx->has_project && (req->tier == MM_TIER_AUTO || req->tier == MM_TIER_BOTH || req->tier == MM_TIER_PROJECT);
 
@@ -2674,6 +2708,8 @@ int mm_recall_candidates(mm_ctx_t *ctx, const mm_recall_req_t *req,
 		}
 	}
 
+	ctx->metrics.candidates_fetched += (lex_count + sem_count);
+
 	mm_candidate_t *fused = NULL;
 	size_t n_fused = 0;
 	mm_fuse_rankings_rrf(lex_list, lex_count, sem_list, sem_count, 0, &fused, &n_fused);
@@ -2692,6 +2728,16 @@ int mm_recall_candidates(mm_ctx_t *ctx, const mm_recall_req_t *req,
 
 	int rc = mm_filter_and_enrich(fused, n_fused, &crit, out_candidates, out_count);
 	mm_candidates_free(fused, n_fused);
+
+	if (rc == 0) {
+		ctx->metrics.candidates_filtered += *out_count;
+	}
+
+	uint64_t t1 = mm_time_now_us();
+	uint64_t elapsed = (t1 >= t0) ? (t1 - t0) : 0;
+	ctx->metrics.last_recall_us = elapsed;
+	ctx->metrics.recall_latency_us += elapsed;
+
 	return rc;
 }
 
@@ -2848,3 +2894,159 @@ int mm_recall_persistent(mm_ctx_t *ctx, const mm_recall_req_t *req,
 	if (out_len) *out_len = pos;
 	return 0;
 }
+
+/* ============================================================================
+ * 10. Operational Metrics & Observability Implementation
+ * ============================================================================ */
+
+#ifndef __wasm__
+uint64_t mm_get_fusion_duplicates_pruned(void);
+void mm_reset_fusion_duplicates(void);
+#endif
+
+int mm_get_metrics(const mm_ctx_t *ctx, mm_metrics_t *out_metrics) {
+	if (!ctx || !out_metrics) return -1;
+	*out_metrics = ctx->metrics;
+
+	/* Ingest global counters */
+	uint64_t tk_calls = 0, tk_fails = 0;
+	mm_get_global_token_metrics(&tk_calls, &tk_fails);
+	out_metrics->token_decode_calls = tk_calls;
+	out_metrics->token_decode_failures = tk_fails;
+
+#ifndef __wasm__
+	out_metrics->duplicates_pruned = mm_get_fusion_duplicates_pruned();
+#endif
+
+	/* Live store ref counts */
+	uint32_t *grefs = NULL, *prefs = NULL;
+	size_t ng = 0, np = 0;
+	if (mm_list_refs((mm_ctx_t *)ctx, MM_TIER_GLOBAL, &grefs, &ng) == 0) {
+		out_metrics->global_ref_count = ng;
+		free(grefs);
+	}
+	if (ctx->has_project && mm_list_refs((mm_ctx_t *)ctx, MM_TIER_PROJECT, &prefs, &np) == 0) {
+		out_metrics->project_ref_count = np;
+		free(prefs);
+	}
+
+	if (ctx->code_index_loaded) {
+		out_metrics->code_symbol_count = ctx->code_index.n_symbols;
+		out_metrics->code_file_count   = ctx->code_index.n_files;
+	}
+
+	return 0;
+}
+
+void mm_reset_metrics(mm_ctx_t *ctx) {
+	if (!ctx) return;
+	memset(&ctx->metrics, 0, sizeof(ctx->metrics));
+	mm_reset_global_token_metrics();
+#ifndef __wasm__
+	mm_reset_fusion_duplicates();
+#endif
+}
+
+int mm_format_metrics(const mm_metrics_t *m, bool json, char **out_buf, size_t *out_len) {
+	if (!m || !out_buf) return -1;
+
+	size_t cap = 2048;
+	char *buf = (char *)malloc(cap);
+	if (!buf) return -1;
+	buf[0] = '\0';
+	size_t pos = 0;
+
+	if (json) {
+		mm_buf_appendf(&buf, &pos, &cap,
+			"{\"recall_latency_us\":%lu,"
+			"\"record_latency_us\":%lu,"
+			"\"code_index_latency_us\":%lu,"
+			"\"last_recall_us\":%lu,"
+			"\"last_record_us\":%lu,"
+			"\"total_recalls\":%lu,"
+			"\"total_records\":%lu,"
+			"\"total_reviews\":%lu,"
+			"\"total_guardrail_checks\":%lu,"
+			"\"inmem_hits\":%lu,"
+			"\"cormd_requests\":%lu,"
+			"\"cli_invocations\":%lu,"
+			"\"token_decode_calls\":%lu,"
+			"\"token_decode_failures\":%lu,"
+			"\"candidates_fetched\":%lu,"
+			"\"candidates_filtered\":%lu,"
+			"\"duplicates_pruned\":%lu,"
+			"\"guardrail_warnings\":%lu,"
+			"\"global_ref_count\":%zu,"
+			"\"project_ref_count\":%zu,"
+			"\"code_symbol_count\":%zu,"
+			"\"code_file_count\":%zu}",
+			(unsigned long)m->recall_latency_us,
+			(unsigned long)m->record_latency_us,
+			(unsigned long)m->code_index_latency_us,
+			(unsigned long)m->last_recall_us,
+			(unsigned long)m->last_record_us,
+			(unsigned long)m->total_recalls,
+			(unsigned long)m->total_records,
+			(unsigned long)m->total_reviews,
+			(unsigned long)m->total_guardrail_checks,
+			(unsigned long)m->inmem_hits,
+			(unsigned long)m->cormd_requests,
+			(unsigned long)m->cli_invocations,
+			(unsigned long)m->token_decode_calls,
+			(unsigned long)m->token_decode_failures,
+			(unsigned long)m->candidates_fetched,
+			(unsigned long)m->candidates_filtered,
+			(unsigned long)m->duplicates_pruned,
+			(unsigned long)m->guardrail_warnings,
+			m->global_ref_count,
+			m->project_ref_count,
+			m->code_symbol_count,
+			m->code_file_count);
+	} else {
+		double avg_recall_ms = (m->total_recalls > 0)
+			? ((double)m->recall_latency_us / (double)m->total_recalls / 1000.0) : 0.0;
+		double avg_record_ms = (m->total_records > 0)
+			? ((double)m->record_latency_us / (double)m->total_records / 1000.0) : 0.0;
+
+		mm_buf_appendf(&buf, &pos, &cap,
+			"=== libmm Telemetry & Operational Metrics ===\n"
+			"Operations:\n"
+			"  Recalls:           %lu (avg: %.2f ms, last: %.2f ms)\n"
+			"  Records:           %lu (avg: %.2f ms, last: %.2f ms)\n"
+			"  Reviews:           %lu\n"
+			"  Guardrail Checks:  %lu (warnings triggered: %lu)\n"
+			"\n"
+			"Transport & Storage Execution:\n"
+			"  In-Memory Hits:    %lu\n"
+			"  cormd Requests:    %lu\n"
+			"  CLI Invocations:   %lu\n"
+			"  Token Decodes:     %lu (failures: %lu)\n"
+			"\n"
+			"Retrieval & Pipeline Quality:\n"
+			"  Candidates Ingest: %lu fetched -> %lu surviving filter\n"
+			"  Duplicates Pruned: %lu\n"
+			"\n"
+			"Database Footprint:\n"
+			"  Global Memories:   %zu\n"
+			"  Project Memories:  %zu\n"
+			"  Code Index:        %zu symbols across %zu files\n",
+			(unsigned long)m->total_recalls, avg_recall_ms, (double)m->last_recall_us / 1000.0,
+			(unsigned long)m->total_records, avg_record_ms, (double)m->last_record_us / 1000.0,
+			(unsigned long)m->total_reviews,
+			(unsigned long)m->total_guardrail_checks, (unsigned long)m->guardrail_warnings,
+			(unsigned long)m->inmem_hits,
+			(unsigned long)m->cormd_requests,
+			(unsigned long)m->cli_invocations,
+			(unsigned long)m->token_decode_calls, (unsigned long)m->token_decode_failures,
+			(unsigned long)m->candidates_fetched, (unsigned long)m->candidates_filtered,
+			(unsigned long)m->duplicates_pruned,
+			m->global_ref_count,
+			m->project_ref_count,
+			m->code_symbol_count, m->code_file_count);
+	}
+
+	*out_buf = buf;
+	if (out_len) *out_len = pos;
+	return 0;
+}
+

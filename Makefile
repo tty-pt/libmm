@@ -4,7 +4,7 @@ all := libmm mm
 libmm-obj-y := src/mm_ctx.o src/mm_fusion.o src/mm_code.o src/mm_session.o src/mm_mcp.o src/mm_project.o src/mm_distill.o
 
 LDLIBS-libmm := -L../libcorm/lib -L../libstele/lib -lcorm -lstele -lm
-LDLIBS-mm := -L./lib -L../libcorm/lib -L../libstele/lib -lmm -lcorm -lstele -lm
+LDLIBS-mm := -L./lib -L../libcorm/lib -L../libstele/lib -lmm -lcorm -lstele -lm -Wl,-rpath,'$$ORIGIN/../lib'
 CFLAGS-BIN-Windows :=
 
 WASM_SRCS := npm/wasm/mm_wasm.c
@@ -17,7 +17,7 @@ LDLIBS-alpine :=
 CFLAGS := -I./include -I../libcorm/include -I../libstele/include -O2 ${CFLAGS} $(EXTRA_CFLAGS)
 LDFLAGS := -L./lib -L../libcorm/lib -L../libstele/lib ${LDFLAGS}
 
-TEST_BINS := bin/test_payload${EXE} bin/test_fusion${EXE} bin/test_code${EXE} bin/test_tiers_cli_mcp${EXE} bin/test_project${EXE} bin/test_distill${EXE}
+TEST_BINS := bin/test_payload${EXE} bin/test_fusion${EXE} bin/test_code${EXE} bin/test_tiers_cli_mcp${EXE} bin/test_project${EXE} bin/test_distill${EXE} bin/test_metrics${EXE} bin/test_token_decode${EXE} bin/test_ren_mm${EXE}
 TEST_LIB_PATH := ./lib:../libcorm/lib:../libstele/lib:../libjoint/lib:../liblemma/lib:../libsepal/lib:../libislet/lib:/opt/homebrew/lib:/usr/local/lib:/usr/lib
 TEST_ENV := LD_LIBRARY_PATH=${TEST_LIB_PATH}:$$LD_LIBRARY_PATH DYLD_LIBRARY_PATH=${TEST_LIB_PATH}:$$DYLD_LIBRARY_PATH CORM_AXIS_PATH=../libjoint/lib:../liblemma/lib:../libsepal/lib:../libislet/lib:/opt/homebrew/lib:/usr/local/lib:/usr/lib
 
@@ -45,6 +45,18 @@ bin/test_distill${EXE}: tests/test_distill.c lib/libmm.${SO}
 	@mkdir -p bin
 	${cc} ${CFLAGS} -o $@ tests/test_distill.c ${LDFLAGS} ${LDLIBS-mm}
 
+bin/test_metrics${EXE}: tests/test_metrics.c lib/libmm.${SO}
+	@mkdir -p bin
+	${cc} ${CFLAGS} -o $@ tests/test_metrics.c ${LDFLAGS} ${LDLIBS-mm}
+
+bin/test_token_decode${EXE}: tests/test_token_decode.c lib/libmm.${SO}
+	@mkdir -p bin
+	${cc} ${CFLAGS} -I../liblemma/include -o $@ tests/test_token_decode.c ${LDFLAGS} ${LDLIBS-mm} -L../liblemma/lib -llemma
+
+bin/test_ren_mm${EXE}: tests/test_ren_mm.c mods/ren-mm/ren-mm.c lib/libmm.${SO}
+	@mkdir -p bin
+	${cc} ${CFLAGS} -I../axil-auren/include -I../libxylem/include -o $@ tests/test_ren_mm.c ${LDFLAGS} ${LDLIBS-mm} -L../axil-auren/lib -lren -L../liblemma/lib -llemma
+
 mods/ren-mm/ren-mm.so: mods/ren-mm/ren-mm.c lib/libmm.${SO}
 	@mkdir -p mods/ren-mm
 	${cc} ${CFLAGS} -I../axil-auren/include -I../libxylem/include -fPIC -shared -o $@ mods/ren-mm/ren-mm.c ${LDFLAGS} -L./lib -lmm -L../axil-auren/lib -lren -Wl,-rpath,'$$ORIGIN/../../lib'
@@ -56,7 +68,15 @@ test: all ${TEST_BINS}
 	${TEST_ENV} ./bin/test_tiers_cli_mcp${EXE}
 	${TEST_ENV} ./bin/test_project${EXE}
 	${TEST_ENV} ./bin/test_distill${EXE}
+	${TEST_ENV} ./bin/test_metrics${EXE}
+	${TEST_ENV} ./bin/test_token_decode${EXE}
+	${TEST_ENV} ./bin/test_ren_mm${EXE}
 	${TEST_ENV} sh ./tests/test_cli_mcp.sh
+
+bench: all bin/test_metrics${EXE}
+	@echo "=== libmm Microsecond Latency Benchmark ==="
+	${TEST_ENV} ./bin/test_metrics${EXE}
+	${TEST_ENV} ./bin/mm status
 
 ${DESTDIR}${PREFIX}/lib/pkgconfig/mm.pc: mm.pc
 	install -d ${DESTDIR}${PREFIX}/lib/pkgconfig

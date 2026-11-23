@@ -614,6 +614,53 @@ int mm_distill_parse(const char *distilled_text, mm_record_req_t *out_req,
 int mm_distill_commit(mm_ctx_t *ctx, const char *distilled_text,
                       mm_tier_t *out_tier, uint32_t *out_ref);
 
+/* ============================================================================
+ * 10. Operational Metrics & Observability (mm_ctx.c)
+ * ============================================================================ */
+
+typedef struct {
+	/* 1. Operation Latencies (cumulative microseconds) */
+	uint64_t recall_latency_us;
+	uint64_t record_latency_us;
+	uint64_t code_index_latency_us;
+	uint64_t last_recall_us;
+	uint64_t last_record_us;
+
+	/* 2. Operation Counts */
+	uint64_t total_recalls;
+	uint64_t total_records;
+	uint64_t total_reviews;
+	uint64_t total_guardrail_checks;
+
+	/* 3. Transport & Execution Path Counts */
+	uint64_t inmem_hits;            /**< Served from populated in-memory tier cache */
+	uint64_t cormd_requests;        /**< Served via Unix domain socket */
+	uint64_t cli_invocations;       /**< Fallback via fork/exec corm CLI */
+	uint64_t token_decode_calls;    /**< HTOK TYPE_TOKENS decoded via liblemma */
+	uint64_t token_decode_failures; /**< Token decode fallbacks or errors */
+
+	/* 4. Quality & Filtering Counters */
+	uint64_t candidates_fetched;    /**< Total raw candidate lines from storage */
+	uint64_t candidates_filtered;   /**< Candidates surviving noise/lifecycle filters */
+	uint64_t duplicates_pruned;     /**< Near-duplicate memories deduplicated */
+	uint64_t guardrail_warnings;    /**< Guardrails that triggered warnings */
+
+	/* 5. Memory & Store Footprint */
+	size_t   global_ref_count;
+	size_t   project_ref_count;
+	size_t   code_symbol_count;
+	size_t   code_file_count;
+} mm_metrics_t;
+
+/** Read point-in-time metrics snapshot from the mm context. */
+int mm_get_metrics(const mm_ctx_t *ctx, mm_metrics_t *out_metrics);
+
+/** Reset cumulative metrics counters. */
+void mm_reset_metrics(mm_ctx_t *ctx);
+
+/** Format metrics snapshot into human-readable text or JSON. */
+int mm_format_metrics(const mm_metrics_t *metrics, bool json, char **out_buf, size_t *out_len);
+
 #ifdef __cplusplus
 }
 #endif

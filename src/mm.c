@@ -85,10 +85,25 @@ int main(int argc, char **argv) {
 	if (!strcmp(cmd, "mcp") || !strcmp(cmd, "--mcp")) {
 		exit_code = mm_mcp_serve_stdio(ctx);
 	} else if (!strcmp(cmd, "status")) {
-		printf("Global Tier (Tier 1):  %s\n", mm_get_tier_dir(ctx, MM_TIER_GLOBAL));
-		printf("Project Tier (Tier 2): %s\n", mm_has_project_tier(ctx) ? mm_get_tier_dir(ctx, MM_TIER_PROJECT) : "(none)");
-		printf("Project Root:          %s\n", mm_get_project_root(ctx));
-		printf("Project Name:          %s\n", mm_get_project_name(ctx));
+		bool json = false;
+		for (int i = 2; i < argc; i++) {
+			if (!strcmp(argv[i], "--json")) json = true;
+		}
+		mm_metrics_t metrics;
+		if (mm_get_metrics(ctx, &metrics) == 0) {
+			char *formatted = NULL;
+			if (mm_format_metrics(&metrics, json, &formatted, NULL) == 0 && formatted) {
+				if (!json) {
+					printf("Global Tier (Tier 1):  %s\n", mm_get_tier_dir(ctx, MM_TIER_GLOBAL));
+					printf("Project Tier (Tier 2): %s\n", mm_has_project_tier(ctx) ? mm_get_tier_dir(ctx, MM_TIER_PROJECT) : "(none)");
+					printf("Project Root:          %s\n", mm_get_project_root(ctx));
+					printf("Project Name:          %s\n\n", mm_get_project_name(ctx));
+				}
+				fputs(formatted, stdout);
+				if (json) putchar('\n');
+				free(formatted);
+			}
+		}
 	} else if (!strcmp(cmd, "prime")) {
 		const char *prompt = (argc >= 3) ? argv[2] : "";
 		for (int i = 2; i < argc; i++) {
