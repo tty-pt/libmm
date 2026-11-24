@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <json-c/json.h>
 #include "ttypt/libren.h"
 #include "ttypt/mm.h"
 #include <ttypt/xy.h>
@@ -37,11 +38,29 @@ static int do_recall(const char *args, char **out_result) {
         return 0;
     }
 
+    char *json_proj = NULL;
+    char *json_query = NULL;
+    struct json_object *obj = json_tokener_parse(args);
+    if (obj && json_object_is_type(obj, json_type_object)) {
+        struct json_object *p = json_object_object_get(obj, "project");
+        if (p && json_object_is_type(p, json_type_string)) {
+            json_proj = strdup(json_object_get_string(p));
+        }
+        struct json_object *q = json_object_object_get(obj, "query");
+        if (!q) q = json_object_object_get(obj, "args");
+        if (q && json_object_is_type(q, json_type_string)) {
+            json_query = strdup(json_object_get_string(q));
+        }
+        json_object_put(obj);
+    } else if (obj) {
+        json_object_put(obj);
+    }
+
     /* Optional "project:<name> " prefix */
     char proj_buf[128] = {0};
-    const char *proj = NULL;
-    const char *rest = args;
-    if (strncmp(rest, "project:", 8) == 0) {
+    const char *proj = json_proj;
+    const char *rest = json_query ? json_query : args;
+    if (!proj && strncmp(rest, "project:", 8) == 0) {
         rest += 8;
         const char *sp = strchr(rest, ' ');
         if (sp) {
@@ -149,9 +168,13 @@ static int do_recall(const char *args, char **out_result) {
     }
 
     if (rc != 0 || !buf) {
+        free(json_proj);
+        free(json_query);
         *out_result = strdup("No memories found.");
         return 0;
     }
+    free(json_proj);
+    free(json_query);
     *out_result = buf;
     return 0;
 }
@@ -175,14 +198,34 @@ static int do_record(const char *args, char **out_result) {
         }
     }
 
-    /* args: problem::findings */
-    char *copy = strdup(args);
-    char *sep = strstr(copy, "::");
-    const char *problem = copy;
-    const char *findings = NULL;
-    if (sep) {
-        *sep = '\0';
-        findings = sep + 2;
+    /* args: problem::findings or JSON {problem, findings} */
+    char *json_problem = NULL;
+    char *json_findings = NULL;
+    struct json_object *obj = json_tokener_parse(args);
+    if (obj && json_object_is_type(obj, json_type_object)) {
+        struct json_object *p = json_object_object_get(obj, "problem");
+        if (p && json_object_is_type(p, json_type_string)) {
+            json_problem = strdup(json_object_get_string(p));
+        }
+        struct json_object *f = json_object_object_get(obj, "findings");
+        if (!f) f = json_object_object_get(obj, "finding");
+        if (f && json_object_is_type(f, json_type_string)) {
+            json_findings = strdup(json_object_get_string(f));
+        }
+        json_object_put(obj);
+    } else if (obj) {
+        json_object_put(obj);
+    }
+
+    char *copy = json_problem ? NULL : strdup(args);
+    const char *problem = json_problem ? json_problem : copy;
+    const char *findings = json_findings;
+    if (!json_problem && copy) {
+        char *sep = strstr(copy, "::");
+        if (sep) {
+            *sep = '\0';
+            findings = sep + 2;
+        }
     }
 
     mm_record_req_t req;
@@ -201,6 +244,8 @@ static int do_record(const char *args, char **out_result) {
     uint32_t ref;
     int rc = mm_record(g_mm_ctx, &req, &tier, &ref);
     free(copy);
+    free(json_problem);
+    free(json_findings);
     if (rc != 0) {
         *out_result = strdup("Error: record failed");
         return -1;
@@ -211,6 +256,26 @@ static int do_record(const char *args, char **out_result) {
     return 0;
 }
 
+static const char RECALL_SCHEMA[] =
+    "{\n"
+    "  \"type\": \"object\",\n"
+    "  \"properties\": {\n"
+    "    \"query\": {\"type\": \"string\", \"description\": \"Search query or mode (e.g. query, code:query, symbol:name, trace:name, diff, guardrail:intent, session:query, projects)\"},\n"
+    "    \"project\": {\"type\": \"string\", \"description\": \"Optional project name filter or 'all'\"}\n"
+    "  },\n"
+    "  \"required\": [\"query\"]\n"
+    "}";
+
+static const char RECORD_SCHEMA[] =
+    "{\n"
+    "  \"type\": \"object\",\n"
+    "  \"properties\": {\n"
+    "    \"problem\": {\"type\": \"string\", \"description\": \"Problem description, standing rule, or task\"},\n"
+    "    \"findings\": {\"type\": \"string\", \"description\": \"Findings, observations, or solution details\"}\n"
+    "  },\n"
+    "  \"required\": [\"problem\"]\n"
+    "}";
+
 XY_MODULE_API void xy_install(void) {
     mm_options_t opts;
     memset(&opts, 0, sizeof(opts));
@@ -218,8 +283,8 @@ XY_MODULE_API void xy_install(void) {
     opts.semantic_search = false;
     g_mm_ctx = mm_open(&opts);
 
-    ren_register_tool("recall", "recall [project:<name>] <query|code:query|symbol:name|trace:name|diff|guardrail:intent|session:query|projects>", do_recall);
-    ren_register_tool("record", "record <problem>::<findings> | <line-delimited distillation block>", do_record);
+    ren_register_tool_with_schema("recall", "recall [project:<name>] <query|code:query|symbol:name|trace:name|diff|guardrail:intent|session:query|projects> (or JSON {query, project})", RECALL_SCHEMA, do_recall);
+    ren_register_tool_with_schema("record", "record <problem>::<findings> | <line-delimited distillation block> (or JSON {problem, findings})", RECORD_SCHEMA, do_record);
     ren_register_prompt_hint(
         "Memory & code tools are available: use 'recall <query>' for memories, "
         "'recall [project:<name>] code:<query>' to search code, "

@@ -18,6 +18,13 @@ void ren_register_tool(const char *name, const char *usage, ren_tool_func fn) {
 	if (strcmp(name, "record") == 0) g_record_fn = fn;
 }
 
+void ren_register_tool_with_schema(const char *name, const char *usage, const char *schema_json, ren_tool_func fn) {
+	(void)usage;
+	(void)schema_json;
+	if (strcmp(name, "recall") == 0) g_recall_fn = fn;
+	if (strcmp(name, "record") == 0) g_record_fn = fn;
+}
+
 void ren_register_prompt_hint(const char *hint) {
 	(void)hint;
 }

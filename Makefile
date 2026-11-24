@@ -55,7 +55,7 @@ bin/test_token_decode${EXE}: tests/test_token_decode.c lib/libmm.${SO}
 
 bin/test_ren_mm${EXE}: tests/test_ren_mm.c mods/ren-mm/ren-mm.c lib/libmm.${SO}
 	@mkdir -p bin
-	${cc} ${CFLAGS} -I../axil-auren/include -I../libxylem/include -o $@ tests/test_ren_mm.c ${LDFLAGS} ${LDLIBS-mm} -L../axil-auren/lib -lren -L../liblemma/lib -llemma
+	${cc} ${CFLAGS} -I../axil-auren/include -I../libxylem/include -o $@ tests/test_ren_mm.c ${LDFLAGS} ${LDLIBS-mm} -L../axil-auren/lib -lren -L../liblemma/lib -llemma -ljson-c
 
 bin/test_federation${EXE}: tests/test_federation.c lib/libmm.${SO}
 	@mkdir -p bin
@@ -71,7 +71,7 @@ bin/test_telemetry${EXE}: tests/test_telemetry.c lib/libmm.${SO}
 
 mods/ren-mm/ren-mm.so: mods/ren-mm/ren-mm.c lib/libmm.${SO}
 	@mkdir -p mods/ren-mm
-	${cc} ${CFLAGS} -I../axil-auren/include -I../libxylem/include -fPIC -shared -o $@ mods/ren-mm/ren-mm.c ${LDFLAGS} -L./lib -lmm -L../axil-auren/lib -lren -Wl,-rpath,'$$ORIGIN/../../lib'
+	${cc} ${CFLAGS} -I../axil-auren/include -I../libxylem/include -fPIC -shared -o $@ mods/ren-mm/ren-mm.c ${LDFLAGS} -L./lib -lmm -L../axil-auren/lib -lren -ljson-c -Wl,-rpath,'$$ORIGIN/../../lib'
 
 test: all ${TEST_BINS}
 	${TEST_ENV} ./bin/test_payload${EXE}
