@@ -102,6 +102,12 @@ console.log(JSON.parse(wasmRecallJson("WASM memory", "ui", 5)));
 - `.detectXyMismatches()` / `.resolveCrossBoundary(symbolName?, filePath?)` / `.firstTouchDossier(fileOrSymbol)`
 - `scanSource(filePath: string, content: string, fileId?: number): MmCodeSymbol[]`
 
+### Native Addon Multi-Project, Distillation & Session Exports (`nativeBinding`)
+When the native N-API addon is loaded, `nativeBinding` also exposes direct bindings for:
+- `projectCodeSearch`, `projectCodeSymbol`, `projectCodeTrace`
+- `distillPrompt`, `distillCommit`
+- `sessionIngestTurn`, `sessionRecall`, `traverse`
+
 ### WebAssembly Reactor (`dist/mm.wasm`)
 - `getMmWasm(): WebAssembly.Instance`
 - `wasmRecord(problem: string, outcome?: string, subsystem?: string, standing?: boolean): number`

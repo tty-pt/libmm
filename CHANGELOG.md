@@ -8,21 +8,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Multi-Project Registry, Cross-Project Federation & IPC Invalidation (`include/ttypt/mm.h`, `src/mm_project.c`, `src/mm_ctx.c`, `tests/`)**:
+  - Added multi-project registry, lazy `MM_PROJECT_ROOTS` discovery, manifest `mtime` freshness checks, and cross-project code queries (`mm_project_register()`, `mm_project_resolve()`, `mm_project_list()`, `mm_project_open_index()`, `mm_project_code_search()`, `mm_project_code_symbol()`, `mm_project_code_trace()`) (`fae4f92`, `554a403`).
+  - Added cross-project federated recall (`mm_project_recall_all()`), multi-process IPC invalidation ring, and telemetry journaling (`tests/test_federation.c`, `tests/test_ipc_invalidation.c`, `tests/test_telemetry.c`) (`7669e88`).
+  - Added canonical `.mm` / `.pi/mm` directory discovery and `liblemma` HTOK token decoding (`corm_htok_set_tok_decoder`) in `mm_payload_decode()` (`27808a5`).
+- **Operational Metrics & Observability (`include/ttypt/mm.h`, `src/mm_ctx.c`, `src/mm_fusion.c`, `src/mm.c`, `tests/`)**:
+  - Added `mm_metrics_t`, `mm_get_metrics()`, `mm_reset_metrics()`, `mm_format_metrics()`, CLI `mm status` / `mm metrics [--json]`, and unit tests (`tests/test_metrics.c`, `tests/test_token_decode.c`, `tests/test_ren_mm.c`) (`67c65c6`).
+- **Zero-JSON Distillation & Extended N-API Bindings (`include/ttypt/mm.h`, `src/mm_distill.c`, `npm/native/mm_napi.c`, `tests/test_distill.c`)**:
+  - Added zero-JSON line-delimited distillation (`mm_distill_prompt()`, `mm_distill_parse()`, `mm_distill_commit()`) (`ed5222b`).
+  - Exported `projectCodeSearch`, `projectCodeSymbol`, `projectCodeTrace`, `distillPrompt`, `distillCommit`, `sessionIngestTurn`, `sessionRecall`, and `traverse` from `npm/native/mm_napi.c` (`554a403`, `ed5222b`).
+- **`ren-mm` Adapter Module (`mods/ren-mm/ren-mm.c`, `Makefile`, `tests/test_ren_mm.c`)**:
+  - Moved the `ren` memory adapter into `mods/ren-mm/ren-mm.c` (`201465b`), removed legacy `mod_mm.so` symlink installs (`bc0b5f7`), enabled `MM_TIER_BOTH` (`27808a5`), and added JSON schema and structured arguments support for `recall` and `record` (`7669e88`, `40972dd`).
+- **Architecture & API Guides (`docs/ARCHITECTURE.md`, `docs/API.md`, `README.md`)**:
+  - Added comprehensive `docs/ARCHITECTURE.md` and `docs/API.md` guides (`1fb2fd2`, `d88f8c1`).
 - **WebAssembly Reactor (`npm/wasm/mm_wasm.c`, `npm/dist/mm.wasm`)**:
-  - Added standalone `mm.wasm` reactor build (`WASM_GLOBAL_BASE=131072` in `external/mk/include.mk`) exporting `mm_wasm_record`, `mm_wasm_recall_json`, and `mm_wasm_review` on `@tty-pt/stele`'s shared linear memory substrate.
+  - Added standalone `mm.wasm` reactor build (`WASM_GLOBAL_BASE=131072` in `external/mk/include.mk`) exporting `mm_wasm_record`, `mm_wasm_recall_json`, and `mm_wasm_review` on `@tty-pt/stele`'s shared linear memory substrate (`3798060`, `59be6d9`).
 - **In-Memory Tier Store & Structured Candidate Recall (`include/ttypt/mm.h`, `src/mm_ctx.c`, `src/mm_fusion.c`)**:
-  - Added `mm_recall_candidates()`, optional `mm_recall_req_t.subsystem` filtering, and an in-process/WASM envelope store with accent-folded fallback search.
+  - Added `mm_recall_candidates()`, optional `mm_recall_req_t.subsystem` filtering, and an in-process/WASM envelope store with accent-folded fallback search (`3798060`).
 - **Doxygen Manpage Generation & Brand Assets (`Doxyfile`, `assets/logo.png`, `npm/assets/logo.png`)**:
-  - Added `Doxyfile` for `mm.h.3` manpage generation via `make docs` / `make install`, cleaned Doxygen tag warnings in `include/ttypt/mm.h`, and added `libmm` brand assets.
+  - Added `Doxyfile` for `mm.h.3` manpage generation via `make docs` / `make install`, cleaned Doxygen tag warnings in `include/ttypt/mm.h`, and added `libmm` brand assets (`59be6d9`).
 
 ### Changed
+- **Dynamic Formatting Buffers (`src/mm_ctx.c`, `src/mm_code.c`, `src/mm_session.c`)**:
+  - Replaced fixed-buffer `snprintf` formatting across `mm_ctx.c`, `mm_code.c`, and `mm_session.c` with dynamically growing `mm_buf_appendf()` to prevent truncation on large envelopes, code reports, and reinforcement digests (`aa08149`).
 - **Browser-Safe ESM & Dual-Engine Runtime (`npm/dist/index.js`, `npm/dist/index.d.ts`, `npm/native/mm_napi.c`, `npm/package.json`)**:
-  - Removed top-level `node:*` imports for browser/edge compatibility, added `getMmWasm()`, `wasmRecord()`, `wasmRecallJson()`, `wasmReview()`, and `MmContext` WASM fallback when native N-API is unavailable.
-  - Added `summary` fallback alongside `problem` in `NapiRecord` (`npm/native/mm_napi.c`) and aligned TypeScript definitions (`MmRecordRequest`, `MmCodeIndex.readSymbols`).
-  - Added `build:wasm` and `build` scripts and standardized `@tty-pt/corm` and `@tty-pt/stele` `peerDependencies` with zero runtime `dependencies`.
+  - Removed top-level `node:*` imports for browser/edge compatibility, added `getMmWasm()`, `wasmRecord()`, `wasmRecallJson()`, `wasmReview()`, and `MmContext` WASM fallback when native N-API is unavailable (`59be6d9`).
+  - Added `summary` fallback alongside `problem` in `NapiRecord` (`npm/native/mm_napi.c`) and aligned TypeScript definitions (`MmRecordRequest`, `MmCodeIndex.readSymbols`) (`59be6d9`).
+  - Added `build:wasm` and `build` scripts and standardized `@tty-pt/corm` and `@tty-pt/stele` `peerDependencies` with zero runtime `dependencies` (`59be6d9`).
 - **CI Multi-Environment Publishing & Documentation (`.github/workflows/ci.yml`, `README.md`, `npm/README.md`)**:
-  - Added `pull_request` and `workflow_dispatch` CI triggers with tag-gated publishing across all supported environments (`deb`, `apk`, `rpm`, `pacman`, `brew`, `openbsd`, `winget`, and `npm`).
-  - Aligned `CHANGELOG.md`, `README.md`, and `npm/README.md` with ecosystem formatting, badges, dual-engine runtime documentation, and package-manager installation conventions.
+  - Added `pull_request` and `workflow_dispatch` CI triggers with tag-gated publishing across all supported environments (`deb`, `apk`, `rpm`, `pacman`, `brew`, `openbsd`, `winget`, and `npm`) (`59be6d9`).
+  - Aligned `CHANGELOG.md`, `README.md`, and `npm/README.md` with ecosystem formatting, badges, dual-engine runtime documentation, and package-manager installation conventions (`5ab5c34`, `59be6d9`).
 
 ## [1.0.0] - 2026-11-17
 

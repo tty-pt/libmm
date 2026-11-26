@@ -126,6 +126,11 @@ mm mcp
 | **Truth Maintenance & Guardrails** | `mm_validate_lifecycle_transition()`, `mm_propagate_truth_maintenance()`, `mm_evaluate_guardrail()`, `mm_observe_verification_command()`, `mm_record_file_mutation()`, `mm_consolidate_scopes_and_principles()` |
 | **Codebase AST & Call Graph** | `mm_code_index_init()`, `mm_code_scan_source()`, `mm_code_index_dir()`, `mm_code_resolve_call_graph()`, `mm_code_search()`, `mm_code_read_symbol()`, `mm_code_read_symbols_ex()`, `mm_code_trace()`, `mm_code_overview()`, `mm_code_diff_impact()`, `mm_code_diagnose()`, `mm_code_detect_xy_mismatches()`, `mm_code_resolve_cross_boundary_pairs()`, `mm_code_first_touch_dossier()` |
 | **Session & MCP Server** | `mm_session_ingest_turn()`, `mm_session_ingest_event()`, `mm_session_recall_ex()`, `mm_session_compact()`, `mm_classify_prompt()`, `mm_prime()`, `mm_consolidate_drain()`, `mm_mcp_serve_stdio()` |
+| **Multi-Project & Federation** | `mm_project_register()`, `mm_project_resolve()`, `mm_project_list()`, `mm_project_open_index()`, `mm_project_code_search()`, `mm_project_code_symbol()`, `mm_project_code_trace()`, `mm_project_recall_all()` |
+| **Zero-JSON Distillation** | `mm_distill_prompt()`, `mm_distill_parse()`, `mm_distill_commit()` |
+| **Operational Metrics** | `mm_get_metrics()`, `mm_reset_metrics()`, `mm_format_metrics()` |
+
+👉 *See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/API.md](docs/API.md) for detailed architecture and C API guides.*
 
 ---
 
@@ -136,8 +141,8 @@ Prebuilt packages for Linux (APT / Alpine / Arch / Fedora-RHEL), macOS (Homebrew
 
 ### Build from Source
 ```sh
-make                  # builds lib/libmm.so and bin/mm
-make test             # runs all C unit suites (payload, fusion, code, session/CLI/MCP)
+make                  # builds lib/libmm.so, bin/mm, and mods/ren-mm/ren-mm.so
+make test             # runs all C unit suites (payload, fusion, code, project, distill, federation, metrics, ren-mm, CLI/MCP)
 make docs             # generates Doxygen manpages (man/mm.h.3)
 make wasm             # builds npm/dist/mm.wasm via centralized toolchain
 make npm-build        # builds Node-API addon (npm/dist/mm_node.node)
@@ -158,14 +163,19 @@ Official Node.js and Browser WebAssembly bindings are colocated in [`npm/`](npm/
 
 ---
 
-## 6. Multi-Project Lazy Discovery & Zero-JSON Distillation
+## 6. Multi-Project Federation, Zero-JSON Distillation, Telemetry & `ren-mm`
 
-- **Multi-Project Registry (`mm_project.c`)**:
+- **Multi-Project Registry & Federation (`src/mm_project.c`)**:
   - `mm_project_resolve(name_or_path, &info)`: Resolves registered projects from `~/.local/share/mm/projects.tsv`, explicit directories, or lazily probes `MM_PROJECT_ROOTS` (default: `$HOME:$HOME/site/external`).
   - `mm_project_open_index(&proj, &idx)`: Loads cached manifests and automatically re-indexes when source file `mtime`s are newer than the manifest.
   - `mm_project_code_search` / `mm_project_code_symbol` / `mm_project_code_trace`: Query a specific project or pass `NULL` to search across all registered projects, prefixing results with `[project]`.
-- **Zero-JSON Distillation (`mm_distill.c`)**:
+  - `mm_project_recall_all(query, limit, &out, &len)`: Federates persistent memory recall across all registered projects and the global tier via RRF.
+- **Zero-JSON Distillation (`src/mm_distill.c`)**:
   - `mm_distill_prompt()`, `mm_distill_parse()`, `mm_distill_commit()`: Pure-C line-delimited key-value distillation (`PROBLEM:`, `TYPE:`, `APPROACH:`, `FINDING:`, `CONSTRAINT:`) with zero JSON parsing overhead.
+- **Operational Metrics & Telemetry (`src/mm_ctx.c`, `src/mm.c`)**:
+  - `mm_get_metrics()` / `mm_format_metrics()` and `mm metrics [--json]` expose latency, cache hit, transport (`inmem`, `cormd`, `cli`), HTOK token decode, filtering, and footprint counters, alongside multi-process IPC invalidation and telemetry journaling.
+- **`ren-mm` Adapter (`mods/ren-mm/ren-mm.c`)**:
+  - Xylem adapter module integrating `libmm` (`MM_TIER_BOTH`, JSON schema, and structured `recall` / `record` tool arguments) into `libren`.
 
 ## License
 
